@@ -1,0 +1,26 @@
+apiVersion: kpm.io/v1alpha1
+kind: BundleSpec
+
+name: foo
+version: "1.0.0"
+release: "1"
+
+# kpm creates an implicit provides value for the package and version
+# provides:
+# - package(foo=1.0.0)
+
+requires:
+- package(bar)
+- api(widgets.acme.io/v1alpha1)
+
+conflicts:
+- package(foo-legacy)
+
+source:
+  type: file
+  file:
+    path: ./foo-1.0.0-1/manifests/csv.yaml
+  mediaType: application/yaml
+
+annotations:
+  foo: bar
