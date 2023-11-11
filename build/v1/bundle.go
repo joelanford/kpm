@@ -1,6 +1,8 @@
 package v1
 
 import (
+	"bytes"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"io/fs"
@@ -9,6 +11,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	v1 "github.com/joelanford/kpm/api/v1"
+	"github.com/joelanford/kpm/internal/tar"
 )
 
 func Bundle(bundleSpecReader io.Reader, workingFs fs.FS) (*v1.Bundle, error) {
@@ -34,8 +37,9 @@ func Bundle(bundleSpecReader io.Reader, workingFs fs.FS) (*v1.Bundle, error) {
 		)
 		switch bundleSpec.Source.Type {
 		case "file":
-			fileName := filepath.Clean(bundleSpec.Source.File.Path)
-			contentData, err = fs.ReadFile(workingFs, fileName)
+			contentData, err = getFileContent(workingFs, *bundleSpec.Source.File)
+		case "dir":
+			contentData, err = getDirContent(workingFs, *bundleSpec.Source.Dir)
 		default:
 			return nil, fmt.Errorf("unsupported source type: %s", bundleSpec.Source.Type)
 		}
@@ -51,4 +55,45 @@ func Bundle(bundleSpecReader io.Reader, workingFs fs.FS) (*v1.Bundle, error) {
 	}
 
 	return bundle, nil
+}
+
+func getFileContent(root fs.FS, file v1.BundleSourceFile) ([]byte, error) {
+	fileName := filepath.Clean(file.Path)
+	if filepath.IsAbs(fileName) {
+		return nil, fmt.Errorf("absolute file paths are not allowed: %s", fileName)
+	}
+	return fs.ReadFile(root, fileName)
+}
+
+func getDirContent(root fs.FS, dir v1.BundleSourceDir) ([]byte, error) {
+	dirName := filepath.Clean(dir.Path)
+	if filepath.IsAbs(dirName) {
+		return nil, fmt.Errorf("absolute directory paths are not allowed: %s", dirName)
+	}
+	dirFS, err := fs.Sub(root, dirName)
+	if err != nil {
+		return nil, fmt.Errorf("sub filesystem: %w", err)
+	}
+	buf := &bytes.Buffer{}
+	if err := func() error {
+		var w io.Writer = buf
+		switch dir.Compression {
+		case "gzip":
+			gzw := gzip.NewWriter(w)
+			w = gzw
+			defer gzw.Close()
+		}
+		switch dir.Archive {
+		case "tar":
+			if err := tar.Directory(w, dirFS); err != nil {
+				return fmt.Errorf("tar directory: %w", err)
+			}
+		default:
+			return fmt.Errorf("unsupported archive type: %s", dir.Archive)
+		}
+		return nil
+	}(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }

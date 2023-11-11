@@ -14,10 +14,17 @@ type BundleSpec struct {
 type BundleSource struct {
 	Type string            `json:"type"`
 	File *BundleSourceFile `json:"file,omitempty"`
+	Dir  *BundleSourceDir  `json:"dir,omitempty"`
 
 	MediaType string `json:"mediaType"`
 }
 
 type BundleSourceFile struct {
 	Path string `json:"path"`
+}
+
+type BundleSourceDir struct {
+	Path        string `json:"path"`
+	Archive     string `json:"archive"`
+	Compression string `json:"compression,omitempty"`
 }
