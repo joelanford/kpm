@@ -7,19 +7,19 @@ import (
 
 	"github.com/containers/image/v5/docker/reference"
 	"github.com/containers/image/v5/pkg/docker/config"
+	"github.com/joelanford/kpm/action"
+	"github.com/joelanford/kpm/internal/console"
 	"github.com/spf13/cobra"
 	"oras.land/oras-go/v2/content/oci"
 	"oras.land/oras-go/v2/registry/remote"
 	"oras.land/oras-go/v2/registry/remote/auth"
-
-	"github.com/joelanford/kpm/action"
-	"github.com/joelanford/kpm/internal/console"
 )
 
 func Inspect() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:  "inspect <package-reference>",
-		Args: cobra.ExactArgs(1),
+		Use:   "inspect <package-reference>",
+		Short: "Inspect a bundle",
+		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			cmd.SilenceUsage = true
 			ctx := cmd.Context()

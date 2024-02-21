@@ -8,22 +8,26 @@ import (
 	"io/fs"
 	"path/filepath"
 
-	"sigs.k8s.io/yaml"
-
 	v1 "github.com/joelanford/kpm/api/v1"
 	"github.com/joelanford/kpm/internal/tar"
+	"sigs.k8s.io/yaml"
 )
 
 func Bundle(bundleSpecReader io.Reader, workingFs fs.FS) (*v1.Bundle, error) {
+	// Read the bundle spec into a byte slice for unmarshalling.
 	bundleSpecData, err := io.ReadAll(bundleSpecReader)
 	if err != nil {
 		return nil, fmt.Errorf("read bundle spec: %w", err)
 	}
+
+	// Unmarshal the bundle spec.
 	var bundleSpec v1.BundleSpec
 	if err := yaml.Unmarshal(bundleSpecData, &bundleSpec); err != nil {
 		return nil, fmt.Errorf("unmarshal bundle spec: %w", err)
 	}
-	bundleSpec.BundleConfig.Provides = append(bundleSpec.BundleConfig.Provides, fmt.Sprintf("package(%s=%s)", bundleSpec.BundleConfig.Name, bundleSpec.BundleConfig.Version))
+
+	// Apply the implicit bundle provides
+	ensureImplicitProvides(&bundleSpec.BundleConfig)
 
 	bundle := &v1.Bundle{
 		BundleConfig:     bundleSpec.BundleConfig,
@@ -57,6 +61,20 @@ func Bundle(bundleSpecReader io.Reader, workingFs fs.FS) (*v1.Bundle, error) {
 	return bundle, nil
 }
 
+func ensureImplicitProvides(cfg *v1.BundleConfig) {
+	implicitProvides := fmt.Sprintf("package(%s=%s)", cfg.Name, cfg.Version)
+	found := false
+	for _, p := range cfg.Provides {
+		if p == implicitProvides {
+			found = true
+			break
+		}
+	}
+	if !found {
+		cfg.Provides = append(cfg.Provides, implicitProvides)
+	}
+}
+
 func getFileContent(root fs.FS, file v1.BundleSourceFile) ([]byte, error) {
 	fileName := filepath.Clean(file.Path)
 	if filepath.IsAbs(fileName) {
@@ -82,6 +100,10 @@ func getDirContent(root fs.FS, dir v1.BundleSourceDir) ([]byte, error) {
 			gzw := gzip.NewWriter(w)
 			w = gzw
 			defer gzw.Close()
+		case "":
+			// no compression
+		default:
+			return fmt.Errorf("unsupported compression type: %s", dir.Compression)
 		}
 		switch dir.Archive {
 		case "tar":

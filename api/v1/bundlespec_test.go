@@ -4,12 +4,11 @@ import (
 	"path/filepath"
 	"testing"
 
+	v1 "github.com/joelanford/kpm/api/v1"
+	"github.com/joelanford/kpm/internal/testutil"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
-
-	v1 "github.com/joelanford/kpm/api/v1"
-	"github.com/joelanford/kpm/internal/testutil"
 )
 
 func TestBundleSpec(t *testing.T) {
@@ -24,6 +23,7 @@ func TestBundleSpec(t *testing.T) {
 			Name:      "foo",
 			Version:   "1.0.0",
 			Release:   "1",
+			Provides:  []string{"package(foo=1.0.0)"},
 			Requires:  []string{"package(bar)", "api(widgets.acme.io/v1alpha1)"},
 			Conflicts: []string{"package(foo-legacy)"},
 		},

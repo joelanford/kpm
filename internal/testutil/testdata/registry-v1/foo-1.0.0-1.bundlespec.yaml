@@ -6,8 +6,9 @@ version: "1.0.0"
 release: "1"
 
 # kpm creates an implicit provides value for the package and version
-# provides:
-# - package(foo=1.0.0)
+# if not explicitly provided.
+provides:
+- package(foo=1.0.0)
 
 requires:
 - package(bar)

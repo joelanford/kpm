@@ -8,10 +8,9 @@ import (
 	"strings"
 
 	"github.com/Masterminds/semver/v3"
-	"k8s.io/apimachinery/pkg/util/validation"
-
 	"github.com/joelanford/kpm/internal/maps"
 	"github.com/joelanford/kpm/oci"
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 const (
@@ -75,7 +74,7 @@ func (b *Bundle) Blobs() []oci.Blob {
 	return []oci.Blob{oci.BlobFromBytes(b.ContentMediaType, b.Content)}
 }
 
-func (b *Bundle) String() string {
+func (b *Bundle) Tag() string {
 	return fmt.Sprintf("%s-%s-%s", b.Name, b.Version, b.Release)
 }
 

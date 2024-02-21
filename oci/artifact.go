@@ -11,10 +11,15 @@ type Artifact interface {
 	Annotations() (map[string]string, error)
 	SubArtifacts() []Artifact
 	Blobs() []Blob
+	Tag() string
+}
+
+type MediaTyper interface {
+	MediaType() string
 }
 
 type Blob interface {
-	MediaType() string
+	MediaTyper
 	Data() (io.ReadCloser, error)
 }
 

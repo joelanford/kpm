@@ -97,15 +97,20 @@ func push(ctx context.Context, artifact Artifact, store oras.Target) (ocispec.De
 		return ocispec.Descriptor{}, fmt.Errorf("get annotations: %w", err)
 	}
 
+	mediaType := ocispec.MediaTypeImageManifest
+	if mediaTyper, ok := artifact.(MediaTyper); ok {
+		mediaType = mediaTyper.MediaType()
+	}
+
 	data, _ := json.Marshal(ocispec.Manifest{
 		Versioned:    specs.Versioned{SchemaVersion: 2},
-		MediaType:    ocispec.MediaTypeImageManifest,
+		MediaType:    mediaType,
 		ArtifactType: artifact.ArtifactType(),
 		Config:       configDesc.desc,
 		Layers:       layerDescs,
 		Annotations:  annotations,
 	})
-	desc := content.NewDescriptorFromBytes(ocispec.MediaTypeImageManifest, data)
+	desc := content.NewDescriptorFromBytes(mediaType, data)
 	desc.ArtifactType = artifact.ArtifactType()
 
 	if err := pushIfNotExist(ctx, store, desc, bytes.NewBuffer(data)); err != nil {

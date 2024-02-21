@@ -4,67 +4,46 @@ import (
 	"context"
 	"os"
 
-	"github.com/spf13/cobra"
-
 	"github.com/joelanford/kpm/action"
 	"github.com/joelanford/kpm/internal/console"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/spf13/cobra"
 )
 
 func BuildBundle() *cobra.Command {
 	var (
+		dest             destination
 		workingDirectory string
 	)
 	cmd := &cobra.Command{
-		Use:  "bundle <spec-file> <output-file>",
-		Args: cobra.ExactArgs(2),
+		Use:   "bundle <spec-file>",
+		Short: "Build a bundle",
+		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			cmd.SilenceUsage = true
 			ctx := cmd.Context()
-			console.Secondaryf("⏳  Building bundle for %s", args[0])
-			if err := runBuildBundle(ctx, runBundleOptions{
-				specFile:         args[0],
-				outputFile:       args[1],
-				workingDirectory: workingDirectory,
-			}); err != nil {
-				console.Fatalf(1, "💥 %s", err)
+			specFile := args[0]
+
+			run := func(ctx context.Context, pushFunc action.PushFunc) (string, ocispec.Descriptor, error) {
+				specReader, err := os.Open(specFile)
+				if err != nil {
+					return "", ocispec.Descriptor{}, err
+				}
+
+				bb := action.BuildBundle{
+					SpecFileWorkingFS: os.DirFS(workingDirectory),
+					SpecFileReader:    specReader,
+					PushFunc:          pushFunc,
+				}
+				console.Secondaryf("⏳  Building bundle for %s", specFile)
+				return bb.Run(ctx)
 			}
-			console.Primaryf("📦 %s created!", args[1])
+
+			handleError(dest.push(ctx, run))
 		},
 	}
-	cmd.Flags().StringVarP(&workingDirectory, "working-directory", "C", "", "working directory used to resolve relative paths for bundle content")
+	dest.bindSelfRequired(cmd)
+	cmd.Flags().StringVar(&workingDirectory, "working-dir", ".", "working directory used to resolve relative paths in the spec file for bundle contents")
+
 	return cmd
-}
-
-type runBundleOptions struct {
-	specFile         string
-	outputFile       string
-	workingDirectory string
-}
-
-func runBuildBundle(ctx context.Context, opts runBundleOptions) error {
-	specReader, err := os.Open(opts.specFile)
-	if err != nil {
-		return err
-	}
-
-	outputWriter, err := os.Create(opts.outputFile)
-	if err != nil {
-		return err
-	}
-	defer outputWriter.Close()
-
-	if opts.workingDirectory == "" {
-		opts.workingDirectory = "."
-	}
-
-	bb := action.BuildBundle{
-		SpecFileReader:    specReader,
-		SpecFileWorkingFS: os.DirFS(opts.workingDirectory),
-		BundleWriter:      outputWriter,
-	}
-	if err := bb.Run(ctx); err != nil {
-		defer os.Remove(opts.outputFile)
-		return err
-	}
-	return nil
 }

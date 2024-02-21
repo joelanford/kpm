@@ -6,10 +6,12 @@ import (
 
 func Build() *cobra.Command {
 	cmd := &cobra.Command{
-		Use: "build",
+		Use:   "build",
+		Short: "Build artifacts",
 	}
 	cmd.AddCommand(
 		BuildBundle(),
+		BuildLegacyRegistryBundle(),
 	)
 	return cmd
 }

@@ -5,11 +5,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	v1 "github.com/joelanford/kpm/api/v1"
 	"github.com/joelanford/kpm/internal/testutil"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestBundle(t *testing.T) {
@@ -46,7 +45,7 @@ func TestBundle(t *testing.T) {
 	assert.Equal(t, testutil.TestdataFile(t, filepath.Join("registry-v1", "foo-1.0.0-1", "manifests", "csv.yaml")), contentData)
 
 	assert.Nil(t, b.SubArtifacts())
-	assert.Equal(t, "foo-1.0.0-1", b.String())
+	assert.Equal(t, "foo-1.0.0-1", b.Tag())
 	assert.NoError(t, b.Validate())
 }
 

@@ -1,12 +1,13 @@
 package maps
 
 import (
+	"cmp"
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/util/sets"
 )
 
-func MergeStrict[K ordered, V any](m1, m2 map[K]V) (map[K]V, error) {
+func MergeStrict[K cmp.Ordered, V any](m1, m2 map[K]V) (map[K]V, error) {
 	m := make(map[K]V, len(m1)+len(m2))
 	for k, v := range m1 {
 		m[k] = v

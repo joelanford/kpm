@@ -7,10 +7,9 @@ import (
 	"fmt"
 	"strings"
 
-	"k8s.io/apimachinery/pkg/util/validation"
-
 	"github.com/joelanford/kpm/internal/maps"
 	"github.com/joelanford/kpm/oci"
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 const (
@@ -67,6 +66,10 @@ func (c Package) Blobs() []oci.Blob {
 		blobs = append(blobs, oci.BlobFromBytes(c.Icon.MediaType, c.Icon.Data))
 	}
 	return blobs
+}
+
+func (c Package) Tag() string {
+	return c.Name
 }
 
 type PackageConfig struct {
@@ -132,7 +135,7 @@ func (c Package) Validate() error {
 	}
 	bundleIDs := map[string]int{}
 	for i, b := range c.Bundles {
-		bundleIDs[b.String()]++
+		bundleIDs[b.Tag()]++
 		if b.Name != c.Name {
 			errs = append(errs, fmt.Errorf("bundle[%d] is invalid: bundle name %q must match package name %q", i, b.Name, c.Name))
 		}
