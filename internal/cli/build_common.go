@@ -81,7 +81,7 @@ func (d *destination) push(ctx context.Context, buildFunc func(context.Context, 
 		}
 		pushFunc = action.Push(pushRepo, kpmoci.PushOptions{})
 		log = func(tag string, desc ocispec.Descriptor) {
-			console.Primaryf("📦 Successfully pushed bundle \n    🏷️%s:%s\n    📍 %s@%s!", d.ref, tag, d.ref, desc.Digest.String())
+			console.Primaryf("📦 Successfully pushed bundle \n    🏷️%s:%s\n    📍 %s@%s", d.ref, tag, d.ref, desc.Digest.String())
 		}
 	}
 

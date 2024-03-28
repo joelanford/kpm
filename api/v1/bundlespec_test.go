@@ -19,23 +19,26 @@ func TestBundleSpec(t *testing.T) {
 			Kind:       "BundleSpec",
 			APIVersion: "kpm.io/v1alpha1",
 		},
-		BundleConfig: v1.BundleConfig{
-			Name:      "foo",
-			Version:   "1.0.0",
-			Release:   "1",
-			Provides:  []string{"package(foo=1.0.0)"},
-			Requires:  []string{"package(bar)", "api(widgets.acme.io/v1alpha1)"},
-			Conflicts: []string{"package(foo-legacy)"},
-		},
-		Source: &v1.BundleSource{
-			Type: "file",
-			File: &v1.BundleSourceFile{
-				Path: "./foo-1.0.0-1/manifests/csv.yaml",
+		Type: "bundle",
+		Bundle: &v1.BundleSource{
+			BundleConfig: v1.BundleConfig{
+				Name:      "foo",
+				Version:   "1.0.0",
+				Release:   "1",
+				Provides:  []string{"package(foo=1.0.0)"},
+				Requires:  []string{"package(bar)", "api(widgets.acme.io/v1alpha1)"},
+				Conflicts: []string{"package(foo-legacy)"},
 			},
-			MediaType: "application/yaml",
-		},
-		Annotations: map[string]string{
-			"foo": "bar",
+			Source: v1.BundleSourceSource{
+				Type: "file",
+				File: &v1.BundleSourceFile{
+					Path: "./foo-1.0.0-1/manifests/csv.yaml",
+				},
+				MediaType: "application/yaml",
+			},
+			Annotations: map[string]string{
+				"foo": "bar",
+			},
 		},
 	}, spec)
 }

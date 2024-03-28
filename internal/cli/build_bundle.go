@@ -2,9 +2,12 @@ package cli
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"os"
 
 	"github.com/joelanford/kpm/action"
+	v1 "github.com/joelanford/kpm/api/v1"
 	"github.com/joelanford/kpm/internal/console"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/spf13/cobra"
@@ -16,18 +19,28 @@ func BuildBundle() *cobra.Command {
 		workingDirectory string
 	)
 	cmd := &cobra.Command{
-		Use:   "bundle <spec-file>",
+		Use:   "bundle [spec-file]",
 		Short: "Build a bundle",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.MaximumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			cmd.SilenceUsage = true
 			ctx := cmd.Context()
-			specFile := args[0]
 
 			run := func(ctx context.Context, pushFunc action.PushFunc) (string, ocispec.Descriptor, error) {
-				specReader, err := os.Open(specFile)
-				if err != nil {
-					return "", ocispec.Descriptor{}, err
+				var (
+					specReader io.Reader
+					message    string
+				)
+				if len(args) == 1 {
+					var err error
+					specReader, err = os.Open(args[0])
+					if err != nil {
+						return "", ocispec.Descriptor{}, err
+					}
+					message = fmt.Sprintf("Building bundle for spec file %q", args[0])
+				} else {
+					specReader = v1.DefaultRegistryV1Spec
+					message = fmt.Sprintf("Building registry+v1 bundle from directory %q", workingDirectory)
 				}
 
 				bb := action.BuildBundle{
@@ -35,7 +48,7 @@ func BuildBundle() *cobra.Command {
 					SpecFileReader:    specReader,
 					PushFunc:          pushFunc,
 				}
-				console.Secondaryf("⏳  Building bundle for %s", specFile)
+				console.Secondaryf("⏳  %s", message)
 				return bb.Run(ctx)
 			}
 

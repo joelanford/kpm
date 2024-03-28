@@ -10,10 +10,11 @@ import (
 
 	v1 "github.com/joelanford/kpm/api/v1"
 	"github.com/joelanford/kpm/internal/tar"
+	"github.com/joelanford/kpm/oci"
 	"sigs.k8s.io/yaml"
 )
 
-func Bundle(bundleSpecReader io.Reader, workingFs fs.FS) (*v1.Bundle, error) {
+func Bundle(bundleSpecReader io.Reader, workingFs fs.FS) (oci.Artifact, error) {
 	// Read the bundle spec into a byte slice for unmarshalling.
 	bundleSpecData, err := io.ReadAll(bundleSpecReader)
 	if err != nil {
@@ -26,38 +27,46 @@ func Bundle(bundleSpecReader io.Reader, workingFs fs.FS) (*v1.Bundle, error) {
 		return nil, fmt.Errorf("unmarshal bundle spec: %w", err)
 	}
 
+	switch bundleSpec.Type {
+	case "registryV1":
+		return buildRegistryV1(*bundleSpec.RegistryV1, workingFs)
+	case "bundle":
+		return buildBundle(*bundleSpec.Bundle, workingFs)
+	}
+	return nil, fmt.Errorf("unsupported bundle source type: %s", bundleSpec.Type)
+}
+
+func buildRegistryV1(spec v1.RegistryV1Source, workingFs fs.FS) (*v1.RegistryBundle, error) {
+	return RegistryBundle(spec, workingFs)
+}
+
+func buildBundle(spec v1.BundleSource, workingFs fs.FS) (*v1.Bundle, error) {
 	// Apply the implicit bundle provides
-	ensureImplicitProvides(&bundleSpec.BundleConfig)
+	ensureImplicitProvides(&spec.BundleConfig)
 
 	bundle := &v1.Bundle{
-		BundleConfig:     bundleSpec.BundleConfig,
-		ExtraAnnotations: bundleSpec.Annotations,
+		BundleConfig:     spec.BundleConfig,
+		ExtraAnnotations: spec.Annotations,
+		BundleContent: v1.BundleContent{
+			ContentMediaType: spec.Source.MediaType,
+		},
 	}
 
-	if bundleSpec.Source != nil {
-		var (
-			contentData []byte
-			err         error
-		)
-		switch bundleSpec.Source.Type {
-		case "file":
-			contentData, err = getFileContent(workingFs, *bundleSpec.Source.File)
-		case "dir":
-			contentData, err = getDirContent(workingFs, *bundleSpec.Source.Dir)
-		default:
-			return nil, fmt.Errorf("unsupported source type: %s", bundleSpec.Source.Type)
-		}
-		if err != nil {
-			return nil, fmt.Errorf("read bundle content: %w", err)
-		}
-		bundle.ContentMediaType = bundleSpec.Source.MediaType
-		bundle.Content = contentData
+	var err error
+	switch spec.Source.Type {
+	case "file":
+		bundle.Content, err = getFileContent(workingFs, *spec.Source.File)
+	case "dir":
+		bundle.Content, err = getDirContent(workingFs, *spec.Source.Dir)
+	default:
+		return nil, fmt.Errorf("unsupported generic source type: %s", spec.Source.Type)
 	}
-
+	if err != nil {
+		return nil, fmt.Errorf("read bundle content: %w", err)
+	}
 	if err := bundle.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid bundle: %w", err)
 	}
-
 	return bundle, nil
 }
 

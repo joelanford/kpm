@@ -1,28 +1,30 @@
 apiVersion: kpm.io/v1alpha1
 kind: BundleSpec
 
-name: foo
-version: "1.0.0"
-release: "2"
+type: bundle
+bundle:
+  name: foo
+  version: "1.0.0"
+  release: "2"
 
-# kpm creates an implicit provides value for the package and version
-# provides:
-# - package(foo=1.0.0)
+  # kpm creates an implicit provides value for the package and version
+  # provides:
+  # - package(foo=1.0.0)
 
-requires:
-- package(bar)
-- api(widgets.acme.io/v1alpha1)
+  requires:
+  - package(bar)
+  - api(widgets.acme.io/v1alpha1)
 
-conflicts:
-- package(foo-legacy)
+  conflicts:
+  - package(foo-legacy)
 
-source:
-  type: dir
-  dir:
-    path: ./foo-1.0.0-2
-    archive: tar
-    compression: gzip
-  mediaType: application/vnd.io.operatorframework.registry.v1+tar+gzip
+  source:
+    type: dir
+    dir:
+      path: ./foo-1.0.0-2
+      archive: tar
+      compression: gzip
+    mediaType: application/vnd.io.operatorframework.registry.v1+tar+gzip
 
-annotations:
-  fizz: buzz
+  annotations:
+    fizz: buzz
