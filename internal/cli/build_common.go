@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -12,84 +11,113 @@ import (
 	"github.com/joelanford/kpm/internal/remote"
 	kpmoci "github.com/joelanford/kpm/oci"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
-	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 )
 
-var _ pflag.Value = (*destination)(nil)
-
-type destination struct {
-	transport string
-	ref       string
+type destination interface {
+	pushFunc() (action.PushFunc, error)
+	logSuccessFunc() func(string, ocispec.Descriptor)
 }
 
-func (d *destination) String() string {
-	if d == nil || (d.transport == "" && d.ref == "") {
-		return ""
-	}
-	return fmt.Sprintf("%s:%s", d.transport, d.ref)
-}
-
-func (d *destination) Set(s string) error {
+func newDestination(s string) (destination, error) {
 	transport, ref, ok := strings.Cut(s, ":")
 	if !ok {
-		return fmt.Errorf("invalid destination %q: expected format <transport>:<reference>", s)
+		return nil, fmt.Errorf("invalid destination %q: expected format <transport>:<reference>", s)
 	}
 	switch transport {
 	case "oci-archive":
+		return &ociArchiveDestination{ref: ref}, nil
 	case "docker":
 		ref = strings.TrimPrefix(ref, "//")
+		return &dockerDestination{ref: ref}, nil
 	default:
-		return fmt.Errorf("unsupported transport %q", transport)
+		return nil, fmt.Errorf("unsupported transport %q", transport)
 	}
-	d.transport = transport
-	d.ref = ref
-	return nil
 }
 
-func (d *destination) Type() string {
-	return "string"
+//func (d *destination) String() string {
+//	if d == nil || (d.transport == "" && d.ref == "") {
+//		return ""
+//	}
+//	return fmt.Sprintf("%s:%s", d.transport, d.ref)
+//}
+//
+//func (d *destination) push(ctx context.Context, buildFunc func(context.Context, action.PushFunc) (string, ocispec.Descriptor, error)) error {
+//	var pushFunc action.PushFunc
+//	var cleanup = func() error { return nil }
+//	var log = func(tag string, desc ocispec.Descriptor) {}
+//
+//	switch d.transport {
+//	case "oci-archive":
+//		outputWriter, err := os.Create(d.ref)
+//		if err != nil {
+//			return err
+//		}
+//		defer outputWriter.Close()
+//
+//		pushFunc = action.Write(outputWriter)
+//		cleanup = func() error { return os.Remove(d.ref) }
+//		log = func(_ string, _ ocispec.Descriptor) {
+//			console.Primaryf("📦 %s created!", d.ref)
+//		}
+//	case "docker":
+//		pushRepo, err := remote.NewRepository(d.ref)
+//		if err != nil {
+//			return err
+//		}
+//		pushFunc = action.Push(pushRepo, kpmoci.PushOptions{})
+//		log = func(tag string, desc ocispec.Descriptor) {
+//			console.Primaryf("📦 Successfully pushed bundle \n    🏷️%s:%s\n    📍 %s@%s", d.ref, tag, d.ref, desc.Digest.String())
+//		}
+//	}
+//
+//	tag, desc, err := buildFunc(ctx, pushFunc)
+//	if err != nil {
+//		return errors.Join(err, cleanup())
+//	}
+//
+//	log(tag, desc)
+//	return nil
+//}
+
+type dockerDestination struct {
+	ref string
 }
 
-func (d *destination) bindSelfRequired(cmd *cobra.Command) {
-	cmd.Flags().Var(d, "destination", "destination for the bundle (e.g., oci-archive:/path/to/bundle or docker://myrepo/mybundle)")
-	cmd.MarkFlagRequired("destination")
-}
-
-func (d *destination) push(ctx context.Context, buildFunc func(context.Context, action.PushFunc) (string, ocispec.Descriptor, error)) error {
-	var pushFunc action.PushFunc
-	var cleanup = func() error { return nil }
-	var log = func(tag string, desc ocispec.Descriptor) {}
-
-	switch d.transport {
-	case "oci-archive":
-		outputWriter, err := os.Create(d.ref)
-		if err != nil {
-			return err
-		}
-		defer outputWriter.Close()
-
-		pushFunc = action.Write(outputWriter)
-		cleanup = func() error { return os.Remove(d.ref) }
-		log = func(_ string, _ ocispec.Descriptor) {
-			console.Primaryf("📦 %s created!", d.ref)
-		}
-	case "docker":
-		pushRepo, err := remote.NewRepository(d.ref)
-		if err != nil {
-			return err
-		}
-		pushFunc = action.Push(pushRepo, kpmoci.PushOptions{})
-		log = func(tag string, desc ocispec.Descriptor) {
-			console.Primaryf("📦 Successfully pushed bundle \n    🏷️%s:%s\n    📍 %s@%s", d.ref, tag, d.ref, desc.Digest.String())
-		}
-	}
-
-	tag, desc, err := buildFunc(ctx, pushFunc)
+func (d *dockerDestination) pushFunc() (action.PushFunc, error) {
+	pushRepo, err := remote.NewRepository(d.ref)
 	if err != nil {
-		return errors.Join(err, cleanup())
+		return nil, err
 	}
+	return action.Push(pushRepo, kpmoci.PushOptions{}), nil
+}
 
-	log(tag, desc)
-	return nil
+func (d *dockerDestination) logSuccessFunc() func(string, ocispec.Descriptor) {
+	return func(tag string, desc ocispec.Descriptor) {
+		console.Primaryf("📦 Successfully pushed bundle \n    🏷️%s:%s\n    📍 %s@%s", d.ref, tag, d.ref, desc.Digest.String())
+	}
+}
+
+type ociArchiveDestination struct {
+	ref string
+}
+
+func (d *ociArchiveDestination) pushFunc() (action.PushFunc, error) {
+	outputWriter, err := os.Create(d.ref)
+	if err != nil {
+		return nil, err
+	}
+	return func(ctx context.Context, artifact kpmoci.Artifact) (string, ocispec.Descriptor, error) {
+		defer outputWriter.Close()
+		tag, desc, err := action.Write(outputWriter)(ctx, artifact)
+		if err != nil {
+			os.Remove(d.ref)
+		}
+		return tag, desc, err
+	}, nil
+}
+
+func (d *ociArchiveDestination) logSuccessFunc() func(string, ocispec.Descriptor) {
+	return func(_ string, desc ocispec.Descriptor) {
+		console.Primaryf("📦 %s created!\n    📍 %s", d.ref, desc.Digest)
+	}
 }

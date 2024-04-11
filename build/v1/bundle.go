@@ -36,7 +36,7 @@ func Bundle(bundleSpecReader io.Reader, workingFs fs.FS) (oci.Artifact, error) {
 	return nil, fmt.Errorf("unsupported bundle source type: %s", bundleSpec.Type)
 }
 
-func buildRegistryV1(spec v1.RegistryV1Source, workingFs fs.FS) (*v1.RegistryBundle, error) {
+func buildRegistryV1(spec v1.RegistryV1Source, workingFs fs.FS) (*v1.DockerImage, error) {
 	return RegistryBundle(spec, workingFs)
 }
 

@@ -9,14 +9,14 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-type BuildBundle struct {
+type BuildCatalog struct {
 	SpecFileReader io.Reader
-	BundleFS       fs.FS
+	CatalogFS      fs.FS
 	PushFunc       PushFunc
 }
 
-func (a *BuildBundle) Run(ctx context.Context) (string, ocispec.Descriptor, error) {
-	bundle, err := buildv1.Bundle(a.SpecFileReader, a.BundleFS)
+func (a *BuildCatalog) Run(ctx context.Context) (string, ocispec.Descriptor, error) {
+	bundle, err := buildv1.Catalog(a.SpecFileReader, a.CatalogFS)
 	if err != nil {
 		return "", ocispec.Descriptor{}, err
 	}

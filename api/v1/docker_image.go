@@ -5,17 +5,15 @@ import (
 	"github.com/joelanford/kpm/oci"
 )
 
-var _ oci.Artifact = (*RegistryBundle)(nil)
-
-type RegistryBundle struct {
-	tag         string
+type DockerImage struct {
 	configData  []byte
 	blobData    []byte
 	annotations map[string]string
+	tag         string
 }
 
-func NewRegistryBundle(tag string, configData, blobData []byte, annotations map[string]string) *RegistryBundle {
-	return &RegistryBundle{
+func NewDockerImage(tag string, configData, blobData []byte, annotations map[string]string) *DockerImage {
+	return &DockerImage{
 		tag:         tag,
 		configData:  configData,
 		blobData:    blobData,
@@ -23,30 +21,30 @@ func NewRegistryBundle(tag string, configData, blobData []byte, annotations map[
 	}
 }
 
-func (l RegistryBundle) MediaType() string {
+func (l DockerImage) MediaType() string {
 	return images.MediaTypeDockerSchema2Manifest
 }
 
-func (l RegistryBundle) ArtifactType() string {
+func (l DockerImage) ArtifactType() string {
 	return ""
 }
 
-func (l RegistryBundle) Config() oci.Blob {
+func (l DockerImage) Config() oci.Blob {
 	return oci.BlobFromBytes(images.MediaTypeDockerSchema2Config, l.configData)
 }
 
-func (l RegistryBundle) Annotations() (map[string]string, error) {
+func (l DockerImage) Annotations() (map[string]string, error) {
 	return l.annotations, nil
 }
 
-func (l RegistryBundle) SubArtifacts() []oci.Artifact {
+func (l DockerImage) SubArtifacts() []oci.Artifact {
 	return nil
 }
 
-func (l RegistryBundle) Blobs() []oci.Blob {
+func (l DockerImage) Blobs() []oci.Blob {
 	return []oci.Blob{oci.BlobFromBytes(images.MediaTypeDockerSchema2LayerGzip, l.blobData)}
 }
 
-func (l RegistryBundle) Tag() string {
+func (l DockerImage) Tag() string {
 	return l.tag
 }
