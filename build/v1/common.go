@@ -1,18 +1,16 @@
 package v1
 
 import (
+	"archive/tar"
 	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"io/fs"
-	"path/filepath"
-	"strings"
-	"testing/fstest"
+	"os"
 
-	"github.com/joelanford/kpm/internal/tar"
+	"github.com/joelanford/kpm/internal/fsutil"
+	kpmtar "github.com/joelanford/kpm/internal/tar"
 	"github.com/joelanford/kpm/oci"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -60,74 +58,32 @@ func getConfigData(annotations map[string]string, blobData []byte) ([]byte, erro
 	return json.Marshal(config)
 }
 
-func getBlobData(fsys fs.FS) ([]byte, error) {
+func getBlobData(fsys ...fs.FS) ([]byte, error) {
+	tmpDir, err := os.MkdirTemp("", "kpm-blob-data-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmpDir)
+	for _, f := range fsys {
+		if err := fsutil.Write(tmpDir, f); err != nil {
+			return nil, err
+		}
+	}
+
 	buf := &bytes.Buffer{}
-	gzw := gzip.NewWriter(buf)
+	// TODO: figure out why gzipping is causing a problem with diffIDs not matching
+	//       btw, this somehow works with the blob being tar, but the mediatype being tar.gz
+	//gzw := gzip.NewWriter(buf)
+	tw := tar.NewWriter(buf)
+	if err := kpmtar.AddFS(tw, os.DirFS(tmpDir)); err != nil {
+		return nil, err
+	}
 
-	if err := tar.Directory(gzw, fsys); err != nil {
+	if err := tw.Close(); err != nil {
 		return nil, err
 	}
-	if err := gzw.Close(); err != nil {
-		return nil, err
-	}
+	//if err := gzw.Close(); err != nil {
+	//	return nil, err
+	//}
 	return buf.Bytes(), nil
-}
-
-type multiFS struct {
-	fsMap map[string]fs.FS
-}
-
-func newMultiFS() *multiFS {
-	return &multiFS{
-		fsMap: make(map[string]fs.FS),
-	}
-}
-
-func (fsys *multiFS) mount(path string, pathFs fs.FS) error {
-	before, after, _ := strings.Cut(path, string(filepath.Separator))
-	if after == "" {
-		if _, ok := fsys.fsMap[before]; ok {
-			return fmt.Errorf("mount point %q already exists", before)
-		}
-		fsys.fsMap[before] = pathFs
-		return nil
-	}
-
-	beforeFs, ok := fsys.fsMap[before]
-	if !ok {
-		beforeMultiFS := newMultiFS()
-		_ = beforeMultiFS.mount(after, pathFs)
-		fsys.fsMap[before] = beforeMultiFS
-		return nil
-	}
-
-	beforeMultiFS, ok := beforeFs.(*multiFS)
-	if !ok {
-		return fmt.Errorf("mount point %q already exists", before)
-	}
-	beforeMultiFS.mount(after, pathFs)
-	return nil
-}
-
-func (r *multiFS) Open(name string) (fs.File, error) {
-	name = filepath.Clean(name)
-	if name == "." {
-		mapFS := fstest.MapFS{}
-		for path := range r.fsMap {
-			mapFS[path] = &fstest.MapFile{Mode: fs.ModeDir}
-		}
-		return mapFS.Open(name)
-	}
-	if fsys, ok := r.fsMap[name]; ok {
-		return fsys.Open(".")
-	}
-
-	for path, fsys := range r.fsMap {
-		prefix := path + string(filepath.Separator)
-		if strings.HasPrefix(name, prefix) {
-			return fsys.Open(strings.TrimPrefix(name, prefix))
-		}
-	}
-
-	return nil, fs.ErrNotExist
 }

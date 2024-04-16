@@ -7,8 +7,11 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
+	"strings"
 
 	v1 "github.com/joelanford/kpm/api/v1"
+	"github.com/joelanford/kpm/internal/fsutil"
 	"github.com/joelanford/kpm/oci"
 	"sigs.k8s.io/yaml"
 
@@ -25,7 +28,7 @@ func NewCatalogBuilder(rootfs fs.FS, opts ...BuildOption) ArtifactBuilder {
 	b := &catalogBuilder{
 		RootFS: rootfs,
 		opts: buildOptions{
-			SpecReader: v1.DefaultFBCSpec,
+			SpecReader: strings.NewReader(v1.DefaultFBCSpec),
 			Log:        func(string, ...interface{}) {},
 		},
 	}
@@ -58,11 +61,22 @@ func (b *catalogBuilder) BuildArtifact(_ context.Context) (oci.Artifact, error) 
 }
 
 func (b *catalogBuilder) buildFBCCatalog(spec v1.CatalogSpec) (*v1.DockerImage, error) {
-	cacheDir, err := os.MkdirTemp("", "kpm-catalog-build-cache-")
+	tmpDir, err := os.MkdirTemp("", "kpm-catalog-build-")
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(cacheDir)
+	defer os.RemoveAll(tmpDir)
+
+	catalogDir := filepath.Join(tmpDir, "configs")
+	if err := os.MkdirAll(catalogDir, 0755); err != nil {
+		return nil, err
+	}
+
+	cacheDir := filepath.Join(tmpDir, "tmp", "cache")
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+		return nil, err
+	}
+
 	c, err := cache.New(cacheDir)
 	if err != nil {
 		return nil, err
@@ -73,17 +87,19 @@ func (b *catalogBuilder) buildFBCCatalog(spec v1.CatalogSpec) (*v1.DockerImage, 
 		return nil, err
 	}
 
-	b.opts.Log("building FBC cache")
-	if err := c.Build(context.Background(), catalogFS); err != nil {
+	if err := fsutil.Write(catalogDir, catalogFS); err != nil {
 		return nil, err
 	}
 
-	blobFS := newMultiFS()
-	blobFS.mount("catalog", catalogFS)
-	blobFS.mount("tmp/cache", os.DirFS(cacheDir))
+	b.opts.Log("building FBC cache")
+	if err := c.Build(context.Background(), os.DirFS(catalogDir)); err != nil {
+		return nil, err
+	}
+
+	rootFS := os.DirFS(tmpDir)
 
 	b.opts.Log("generating image layers")
-	blobData, err := getBlobData(blobFS)
+	blobData, err := getBlobData(rootFS)
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +108,7 @@ func (b *catalogBuilder) buildFBCCatalog(spec v1.CatalogSpec) (*v1.DockerImage, 
 	if annotations == nil {
 		annotations = make(map[string]string, 5)
 	}
-	annotations[containertools.ConfigsLocationLabel] = "/catalog"
+	annotations[containertools.ConfigsLocationLabel] = "/configs"
 	annotations["operators.operatorframework.io.index.cache.v1"] = "/tmp/cache"
 
 	if spec.DisplayName != "" {
@@ -110,7 +126,7 @@ func (b *catalogBuilder) buildFBCCatalog(spec v1.CatalogSpec) (*v1.DockerImage, 
 		return nil, err
 	}
 
-	return v1.NewDockerImage(cmp.Or(spec.Tag, "latest"), configData, blobData, annotations), nil
+	return v1.NewDockerImage("latest", configData, blobData, annotations), nil
 }
 
 func (b *catalogBuilder) buildSemverCatalog(_ v1.CatalogSpec) (*v1.DockerImage, error) {

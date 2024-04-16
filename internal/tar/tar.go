@@ -11,7 +11,7 @@ import (
 func Directory(w io.Writer, root fs.FS) error {
 	tw := tar.NewWriter(w)
 	defer tw.Close()
-	return addFS(tw, root)
+	return AddFS(tw, root)
 }
 
 // addFS adds the files from fs.FS to the archive.
@@ -20,20 +20,20 @@ func Directory(w io.Writer, root fs.FS) error {
 //
 // NOTE: this function is copied from the Go standard library's tar package, and modified to add the
 // header sanitization logic to avoid leaking local file system information and ensure reproducible output.
-func addFS(tw *tar.Writer, fsys fs.FS) error {
+func AddFS(tw *tar.Writer, fsys fs.FS) error {
+	buf := make([]byte, 32*1024)
 	return fs.WalkDir(fsys, ".", func(name string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
-		}
-		if d.IsDir() {
-			return nil
 		}
 		info, err := d.Info()
 		if err != nil {
 			return err
 		}
-		// TODO(#49580): Handle symlinks when fs.ReadLinkFS is available.
-		if !info.Mode().IsRegular() {
+		if name == "." {
+			return nil
+		}
+		if !info.Mode().IsRegular() && !d.IsDir() {
 			return errors.New("tar: cannot add non-regular file")
 		}
 		h, err := tar.FileInfoHeader(info, "")
@@ -44,6 +44,7 @@ func addFS(tw *tar.Writer, fsys fs.FS) error {
 
 		/* MODIFICATION STARTS HERE */
 		// Sanitize header fields to avoid leaking local file system information and ensure reproducible output.
+		//h.Format = tar.FormatPAX
 		h.ChangeTime = time.Time{}
 		h.AccessTime = time.Time{}
 		h.ModTime = time.Time{}
@@ -56,12 +57,15 @@ func addFS(tw *tar.Writer, fsys fs.FS) error {
 		if err := tw.WriteHeader(h); err != nil {
 			return err
 		}
+		if d.IsDir() {
+			return nil
+		}
 		f, err := fsys.Open(name)
 		if err != nil {
 			return err
 		}
 		defer f.Close()
-		_, err = io.Copy(tw, f)
+		_, err = io.CopyBuffer(tw, f, buf)
 		return err
 	})
 }

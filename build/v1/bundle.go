@@ -3,15 +3,15 @@ package v1
 import (
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"strings"
 
 	v1 "github.com/joelanford/kpm/api/v1"
+	"github.com/joelanford/kpm/internal/fsutil"
+	"github.com/joelanford/kpm/internal/registryv1"
 	"github.com/joelanford/kpm/oci"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/yaml"
 )
 
@@ -24,7 +24,7 @@ func NewBundleBuilder(rootfs fs.FS, opts ...BuildOption) ArtifactBuilder {
 	b := &bundleBuilder{
 		RootFS: rootfs,
 		opts: buildOptions{
-			SpecReader: v1.DefaultRegistryV1Spec,
+			SpecReader: strings.NewReader(v1.DefaultRegistryV1Spec),
 			Log:        func(string, ...interface{}) {},
 		},
 	}
@@ -50,7 +50,6 @@ func (b *bundleBuilder) BuildArtifact(_ context.Context) (oci.Artifact, error) {
 	switch bundleSpec.Type {
 	case "registryV1":
 		return b.buildRegistryV1(*bundleSpec.RegistryV1)
-		//return b.buildFBCBundle(catalogSpec)
 	}
 	return nil, fmt.Errorf("unsupported bundle source type: %s", bundleSpec.Type)
 }
@@ -66,22 +65,25 @@ func (b *bundleBuilder) buildRegistryV1(spec v1.RegistryV1Source) (*v1.DockerIma
 		return nil, err
 	}
 
-	version, err := getRegistryBundleVersion(manifestsFS)
+	version, err := registryv1.GetVersion(manifestsFS)
 	if err != nil {
 		return nil, err
 	}
 
-	annotations, err := readAnnotations(metadataFS)
+	annotations, err := registryv1.GetAnnotations(metadataFS)
 	if err != nil {
 		return nil, err
 	}
 
-	blobFS := newMultiFS()
-	blobFS.mount("manifests", manifestsFS)
-	blobFS.mount("metadata", metadataFS)
+	release, foundRelease := annotations["operators.operatorframework.io.bundle.release.v1"]
+	if !foundRelease {
+		release = "0"
+	}
+	manifestsFS, _ = fsutil.Prefix(manifestsFS, "manifests")
+	metadataFS, _ = fsutil.Prefix(metadataFS, "metadata")
 
 	b.opts.Log("generating image layers")
-	blobData, err := getBlobData(blobFS)
+	blobData, err := getBlobData(manifestsFS, metadataFS)
 	if err != nil {
 		return nil, err
 	}
@@ -91,73 +93,6 @@ func (b *bundleBuilder) buildRegistryV1(spec v1.RegistryV1Source) (*v1.DockerIma
 		return nil, err
 	}
 
-	return v1.NewDockerImage(version, configData, blobData, annotations), nil
-}
-
-func getRegistryBundleVersion(manifestsFS fs.FS) (string, error) {
-	manifestFiles, err := fs.ReadDir(manifestsFS, ".")
-	if err != nil {
-		return "", err
-	}
-
-	var (
-		csvData []byte
-		errs    []error
-	)
-
-	for _, manifestFile := range manifestFiles {
-		if manifestFile.IsDir() {
-			continue
-		}
-		manifestFileData, err := fs.ReadFile(manifestsFS, manifestFile.Name())
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		var m metav1.PartialObjectMetadata
-		if err := yaml.Unmarshal(manifestFileData, &m); err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		if m.Kind == "ClusterServiceVersion" {
-			csvData = manifestFileData
-			break
-		}
-	}
-
-	if len(errs) > 0 {
-		return "", errors.Join(errs...)
-	}
-	if csvData == nil {
-		return "", errors.New("no ClusterServiceVersion found in manifests")
-	}
-
-	var csv unstructured.Unstructured
-	if err := yaml.Unmarshal(csvData, &csv); err != nil {
-		return "", err
-	}
-	version, found, err := unstructured.NestedString(csv.Object, "spec", "version")
-	if err != nil || !found {
-		// Fall back to the name if the version is not set
-		version = csv.GetName()
-	}
-
-	return version, nil
-}
-
-func readAnnotations(metadataFS fs.FS) (map[string]string, error) {
-	annotationsFile, err := fs.ReadFile(metadataFS, "annotations.yaml")
-	if err != nil {
-		return nil, err
-	}
-	var annotations struct {
-		Annotations map[string]string `yaml:"annotations"`
-	}
-	if err := yaml.Unmarshal(annotationsFile, &annotations); err != nil {
-		return nil, err
-	}
-
-	annotations.Annotations["operators.operatorframework.io.bundle.manifests.v1"] = "manifests/"
-	annotations.Annotations["operators.operatorframework.io.bundle.metadata.v1"] = "metadata/"
-	return annotations.Annotations, nil
+	tag := fmt.Sprintf("v%s-%s", version, release)
+	return v1.NewDockerImage(tag, configData, blobData, annotations), nil
 }

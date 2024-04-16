@@ -1,8 +1,6 @@
 package v1
 
 import (
-	"bytes"
-
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -18,9 +16,9 @@ type RegistryV1Source struct {
 	MetadataDir  string `json:"metadataDir,omitempty"`
 }
 
-var DefaultRegistryV1Spec = bytes.NewReader([]byte(`---
+var DefaultRegistryV1Spec = `---
 apiVersion: kpm.io/v1
 kind: BundleSpec
 type: registryV1
 registryV1: {}
-`))
+`

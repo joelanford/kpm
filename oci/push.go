@@ -6,6 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/containerd/containerd/images"
+	"github.com/distribution/distribution/v3"
+	"github.com/distribution/distribution/v3/manifest"
+	"github.com/distribution/distribution/v3/manifest/schema2"
+	"github.com/joelanford/kpm/internal/tar"
 	"io"
 	"os"
 	"runtime"
@@ -25,6 +30,34 @@ import (
 
 type PushOptions struct {
 	ProgressWriter io.Writer
+}
+
+func Write(ctx context.Context, w io.Writer, a Artifact) (string, ocispec.Descriptor, error) {
+	tmpDir, err := os.MkdirTemp("", "kpm-")
+	if err != nil {
+		return "", ocispec.Descriptor{}, err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	tmpStore, err := oci.NewWithContext(ctx, tmpDir)
+	if err != nil {
+		return "", ocispec.Descriptor{}, err
+	}
+
+	desc, err := Push(ctx, a, tmpStore, PushOptions{})
+	if err != nil {
+		return "", ocispec.Descriptor{}, err
+	}
+
+	tag := a.Tag()
+	if err := tmpStore.Tag(ctx, desc, tag); err != nil {
+		return "", ocispec.Descriptor{}, err
+	}
+
+	if err := tar.Directory(w, os.DirFS(tmpDir)); err != nil {
+		return "", ocispec.Descriptor{}, err
+	}
+	return tag, desc, nil
 }
 
 func Push(ctx context.Context, artifact Artifact, target oras.Target, opts PushOptions) (ocispec.Descriptor, error) {
@@ -52,6 +85,7 @@ func Push(ctx context.Context, artifact Artifact, target oras.Target, opts PushO
 			return ocispec.Descriptor{}, fmt.Errorf("push artifact graph: %v", err)
 		}
 	}
+
 	return desc, nil
 }
 
@@ -102,14 +136,46 @@ func push(ctx context.Context, artifact Artifact, store oras.Target) (ocispec.De
 		mediaType = mediaTyper.MediaType()
 	}
 
-	data, _ := json.Marshal(ocispec.Manifest{
-		Versioned:    specs.Versioned{SchemaVersion: 2},
-		MediaType:    mediaType,
-		ArtifactType: artifact.ArtifactType(),
-		Config:       configDesc.desc,
-		Layers:       layerDescs,
-		Annotations:  annotations,
-	})
+	var data []byte
+	switch mediaType {
+	case ocispec.MediaTypeImageManifest:
+		data, _ = json.Marshal(ocispec.Manifest{
+			Versioned:    specs.Versioned{SchemaVersion: 2},
+			MediaType:    mediaType,
+			ArtifactType: artifact.ArtifactType(),
+			Config:       configDesc.desc,
+			Layers:       layerDescs,
+			Annotations:  annotations,
+		})
+	case images.MediaTypeDockerSchema2Manifest:
+		var dockerLayers []distribution.Descriptor
+		for _, desc := range layerDescs {
+			dockerLayers = append(dockerLayers, distribution.Descriptor{
+				MediaType:   desc.MediaType,
+				Digest:      desc.Digest,
+				Size:        desc.Size,
+				URLs:        desc.URLs,
+				Annotations: desc.Annotations,
+				Platform:    desc.Platform,
+			})
+		}
+		data, _ = json.Marshal(schema2.Manifest{
+			Versioned: manifest.Versioned{
+				MediaType:     mediaType,
+				SchemaVersion: 2,
+			},
+			Config: distribution.Descriptor{
+				MediaType:   configDesc.desc.MediaType,
+				Digest:      configDesc.desc.Digest,
+				Size:        configDesc.desc.Size,
+				URLs:        configDesc.desc.URLs,
+				Annotations: configDesc.desc.Annotations,
+				Platform:    configDesc.desc.Platform,
+			},
+			Layers: dockerLayers,
+		})
+	}
+
 	desc := content.NewDescriptorFromBytes(mediaType, data)
 	desc.ArtifactType = artifact.ArtifactType()
 

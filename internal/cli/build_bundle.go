@@ -2,10 +2,12 @@ package cli
 
 import (
 	"fmt"
+	buildv1 "github.com/joelanford/kpm/build/v1"
+	"github.com/joelanford/kpm/transport"
 	"io"
 	"os"
+	"strings"
 
-	"github.com/joelanford/kpm/action"
 	v1 "github.com/joelanford/kpm/api/v1"
 	"github.com/joelanford/kpm/internal/console"
 	"github.com/spf13/cobra"
@@ -15,7 +17,7 @@ func BuildBundle() *cobra.Command {
 	var specFile string
 
 	cmd := &cobra.Command{
-		Use:   "bundle <bundle-directory> <destination>",
+		Use:   "bundle <bundleDir> <destination>",
 		Short: "Build a bundle",
 		Long: `Build a bundle
 
@@ -36,13 +38,9 @@ The destination argument dictates where the bundle is pushed. Options are:
 			bundleDirectory := args[0]
 			bundleFS := os.DirFS(bundleDirectory)
 
-			dest, err := newDestination(args[1])
+			target, err := transport.TargetFor(args[1])
 			if err != nil {
-				handleError(fmt.Errorf("parse destination: %w", err))
-			}
-			pushFunc, err := dest.pushFunc()
-			if err != nil {
-				handleError(fmt.Errorf("get push function from destination: %w", err))
+				handleError(fmt.Errorf("get transport for destination %q: %w", args[1], err))
 			}
 
 			var specReader io.Reader
@@ -55,22 +53,26 @@ The destination argument dictates where the bundle is pushed. Options are:
 				}
 			} else {
 				console.Secondaryf("🏗️Building registry+v1 bundle for directory %q", bundleDirectory)
-				specReader = v1.DefaultRegistryV1Spec
+				specReader = strings.NewReader(v1.DefaultRegistryV1Spec)
 			}
 
-			bb := action.BuildBundle{
-				BundleFS:       bundleFS,
-				SpecFileReader: specReader,
-				PushFunc:       pushFunc,
-				Log: func(format string, args ...any) {
-					console.Secondaryf("   - "+format, args...)
-				},
+			log := func(format string, args ...any) {
+				console.Secondaryf("   - "+format, args...)
 			}
-			tag, desc, err := bb.Run(ctx)
+			bb := buildv1.NewBundleBuilder(bundleFS,
+				buildv1.WithSpecReader(specReader),
+				buildv1.WithLog(log),
+			)
+			bundle, err := bb.BuildArtifact(ctx)
 			if err != nil {
-				handleError(fmt.Errorf("build bundle: %w", err))
+				handleError(fmt.Errorf("failed to build bundle: %w", err))
 			}
-			dest.logSuccessFunc()(tag, desc)
+
+			tag, desc, err := target.Push(ctx, bundle)
+			if err != nil {
+				handleError(fmt.Errorf("failed to push bundle: %w", err))
+			}
+			console.Primaryf("📦 Successfully pushed bundle\n   🏷️%s:%s\n   📍 %s@%s", target.String(), tag, target.String(), desc.Digest.String())
 		},
 	}
 	cmd.Flags().StringVar(&specFile, "spec-file", "", "spec file to use for building the bundle")

@@ -6,6 +6,7 @@ import (
 )
 
 type Artifact interface {
+	MediaTyper
 	ArtifactType() string
 	Config() Blob
 	Annotations() (map[string]string, error)
