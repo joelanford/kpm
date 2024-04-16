@@ -13,10 +13,20 @@ type BuildBundle struct {
 	SpecFileReader io.Reader
 	BundleFS       fs.FS
 	PushFunc       PushFunc
+
+	Log func(string, ...interface{})
 }
 
 func (a *BuildBundle) Run(ctx context.Context) (string, ocispec.Descriptor, error) {
-	bundle, err := buildv1.Bundle(a.SpecFileReader, a.BundleFS)
+	opts := []buildv1.BuildOption{}
+	if a.SpecFileReader != nil {
+		opts = append(opts, buildv1.WithSpecReader(a.SpecFileReader))
+	}
+	if a.Log != nil {
+		opts = append(opts, buildv1.WithLog(a.Log))
+	}
+
+	bundle, err := buildv1.NewBundleBuilder(a.BundleFS, opts...).BuildArtifact(ctx)
 	if err != nil {
 		return "", ocispec.Descriptor{}, err
 	}

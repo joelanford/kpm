@@ -15,17 +15,12 @@ type CatalogSpec struct {
 	Description      string            `json:"description,omitempty"`
 	ExtraAnnotations map[string]string `json:"annotations,omitempty"`
 
-	Type   string        `json:"type"`
-	FBC    *FBCSource    `json:"fbc,omitempty"`
-	Semver *SemverSource `json:"semver,omitempty"`
+	Type string     `json:"type"`
+	FBC  *FBCSource `json:"fbc,omitempty"`
 }
 
 type FBCSource struct {
 	CatalogDir string `json:"catalogDir,omitempty"`
-}
-
-type SemverSource struct {
-	BundlesDir string `json:"bundlesDir,omitempty"`
 }
 
 var DefaultFBCSpec = bytes.NewReader([]byte(`---

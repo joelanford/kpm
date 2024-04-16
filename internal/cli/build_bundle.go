@@ -47,14 +47,14 @@ The destination argument dictates where the bundle is pushed. Options are:
 
 			var specReader io.Reader
 			if specFile != "" {
-				console.Secondaryf("⏳  Building bundle for spec file %q", specFile)
+				console.Secondaryf("🏗️Building bundle for spec file %q", specFile)
 				var err error
 				specReader, err = os.Open(specFile)
 				if err != nil {
 					handleError(fmt.Errorf("open spec file: %w", err))
 				}
 			} else {
-				console.Secondaryf("⏳  Building registry+v1 bundle for directory %q", bundleDirectory)
+				console.Secondaryf("🏗️Building registry+v1 bundle for directory %q", bundleDirectory)
 				specReader = v1.DefaultRegistryV1Spec
 			}
 
@@ -62,6 +62,9 @@ The destination argument dictates where the bundle is pushed. Options are:
 				BundleFS:       bundleFS,
 				SpecFileReader: specReader,
 				PushFunc:       pushFunc,
+				Log: func(format string, args ...any) {
+					console.Secondaryf("   - "+format, args...)
+				},
 			}
 			tag, desc, err := bb.Run(ctx)
 			if err != nil {

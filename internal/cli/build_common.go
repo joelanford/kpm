@@ -88,12 +88,13 @@ func (d *dockerDestination) pushFunc() (action.PushFunc, error) {
 	if err != nil {
 		return nil, err
 	}
+	console.Secondaryf("➡️ Pushing catalog to destination")
 	return action.Push(pushRepo, kpmoci.PushOptions{}), nil
 }
 
 func (d *dockerDestination) logSuccessFunc() func(string, ocispec.Descriptor) {
 	return func(tag string, desc ocispec.Descriptor) {
-		console.Primaryf("📦 Successfully pushed bundle \n    🏷️%s:%s\n    📍 %s@%s", d.ref, tag, d.ref, desc.Digest.String())
+		console.Primaryf("📦 Successfully pushed image\n    🏷️%s:%s\n    📍 %s@%s", d.ref, tag, d.ref, desc.Digest.String())
 	}
 }
 
@@ -108,6 +109,7 @@ func (d *ociArchiveDestination) pushFunc() (action.PushFunc, error) {
 	}
 	return func(ctx context.Context, artifact kpmoci.Artifact) (string, ocispec.Descriptor, error) {
 		defer outputWriter.Close()
+		console.Secondaryf("➡️ Pushing catalog to destination")
 		tag, desc, err := action.Write(outputWriter)(ctx, artifact)
 		if err != nil {
 			os.Remove(d.ref)
@@ -118,6 +120,6 @@ func (d *ociArchiveDestination) pushFunc() (action.PushFunc, error) {
 
 func (d *ociArchiveDestination) logSuccessFunc() func(string, ocispec.Descriptor) {
 	return func(_ string, desc ocispec.Descriptor) {
-		console.Primaryf("📦 %s created!\n    📍 %s", d.ref, desc.Digest)
+		console.Primaryf("📦 Successfully created file\n    📄 %s\n    📍 %s", d.ref, desc.Digest)
 	}
 }

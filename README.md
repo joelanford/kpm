@@ -14,13 +14,18 @@ go install github.com/joelanford/kpm@latest
 1. Build a registry+v1 bundle and push it to an image registry
 
    ```
-   cd <bundleRoot>
-   kpm build bundle --destination=docker://<imageRepo>
+   kpm build bundle <bundleRoot> docker://<imageRepo>
    ```
 
 2. Build an FBC catalog and push it to an image registry
 
    ```
-   cd <catalogRoot>
-   kpm build catalog --destination=docker://<imageRepo>
+   kpm build catalog <catalogRoot> docker://<imageRepo>
    ```
+
+## What's next
+
+1. Build an FBC catalog using a set of bundle files or directories as a source
+    - Build and push all of the bundles
+    - Generate an FBC, with channel entries based purely on the bundles' semver versions
+    - Build and push the FBC

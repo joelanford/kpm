@@ -46,14 +46,14 @@ The --destination flag is required and dictates where the bundle is pushed. Opti
 
 			var specReader io.Reader
 			if specFile != "" {
-				console.Secondaryf("⏳  Building catalog for spec file %q", specFile)
+				console.Secondaryf("🏗️Building catalog for spec file %q", specFile)
 				var err error
 				specReader, err = os.Open(specFile)
 				if err != nil {
 					handleError(fmt.Errorf("open spec file: %w", err))
 				}
 			} else {
-				console.Secondaryf("⏳  Building FBC catalog for directory %q", catalogDirectory)
+				console.Secondaryf("🏗️Building FBC catalog for directory %q", catalogDirectory)
 				specReader = v1.DefaultFBCSpec
 			}
 
@@ -61,6 +61,9 @@ The --destination flag is required and dictates where the bundle is pushed. Opti
 				CatalogFS:      catalogFS,
 				SpecFileReader: specReader,
 				PushFunc:       pushFunc,
+				Log: func(format string, args ...any) {
+					console.Secondaryf("   - "+format, args...)
+				},
 			}
 			tag, desc, err := bb.Run(ctx)
 			if err != nil {

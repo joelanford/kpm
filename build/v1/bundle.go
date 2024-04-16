@@ -1,22 +1,42 @@
 package v1
 
 import (
-	"bytes"
-	"compress/gzip"
+	"cmp"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
-	"path/filepath"
 
 	v1 "github.com/joelanford/kpm/api/v1"
-	"github.com/joelanford/kpm/internal/tar"
 	"github.com/joelanford/kpm/oci"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/yaml"
 )
 
-func Bundle(bundleSpecReader io.Reader, workingFs fs.FS) (oci.Artifact, error) {
+type bundleBuilder struct {
+	RootFS fs.FS
+	opts   buildOptions
+}
+
+func NewBundleBuilder(rootfs fs.FS, opts ...BuildOption) ArtifactBuilder {
+	b := &bundleBuilder{
+		RootFS: rootfs,
+		opts: buildOptions{
+			SpecReader: v1.DefaultRegistryV1Spec,
+			Log:        func(string, ...interface{}) {},
+		},
+	}
+	for _, opt := range opts {
+		opt(&b.opts)
+	}
+	return b
+}
+
+func (b *bundleBuilder) BuildArtifact(_ context.Context) (oci.Artifact, error) {
 	// Read the bundle spec into a byte slice for unmarshalling.
-	bundleSpecData, err := io.ReadAll(bundleSpecReader)
+	bundleSpecData, err := io.ReadAll(b.opts.SpecReader)
 	if err != nil {
 		return nil, fmt.Errorf("read bundle spec: %w", err)
 	}
@@ -29,102 +49,115 @@ func Bundle(bundleSpecReader io.Reader, workingFs fs.FS) (oci.Artifact, error) {
 
 	switch bundleSpec.Type {
 	case "registryV1":
-		return buildRegistryV1(*bundleSpec.RegistryV1, workingFs)
-	case "bundle":
-		return buildBundle(*bundleSpec.Bundle, workingFs)
+		return b.buildRegistryV1(*bundleSpec.RegistryV1)
+		//return b.buildFBCBundle(catalogSpec)
 	}
 	return nil, fmt.Errorf("unsupported bundle source type: %s", bundleSpec.Type)
 }
 
-func buildRegistryV1(spec v1.RegistryV1Source, workingFs fs.FS) (*v1.DockerImage, error) {
-	return RegistryBundle(spec, workingFs)
-}
-
-func buildBundle(spec v1.BundleSource, workingFs fs.FS) (*v1.Bundle, error) {
-	// Apply the implicit bundle provides
-	ensureImplicitProvides(&spec.BundleConfig)
-
-	bundle := &v1.Bundle{
-		BundleConfig:     spec.BundleConfig,
-		ExtraAnnotations: spec.Annotations,
-		BundleContent: v1.BundleContent{
-			ContentMediaType: spec.Source.MediaType,
-		},
-	}
-
-	var err error
-	switch spec.Source.Type {
-	case "file":
-		bundle.Content, err = getFileContent(workingFs, *spec.Source.File)
-	case "dir":
-		bundle.Content, err = getDirContent(workingFs, *spec.Source.Dir)
-	default:
-		return nil, fmt.Errorf("unsupported generic source type: %s", spec.Source.Type)
-	}
+func (b *bundleBuilder) buildRegistryV1(spec v1.RegistryV1Source) (*v1.DockerImage, error) {
+	manifestsFS, err := fs.Sub(b.RootFS, cmp.Or(spec.ManifestsDir, "manifests"))
 	if err != nil {
-		return nil, fmt.Errorf("read bundle content: %w", err)
+		return nil, err
 	}
-	if err := bundle.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid bundle: %w", err)
+
+	metadataFS, err := fs.Sub(b.RootFS, cmp.Or(spec.MetadataDir, "metadata"))
+	if err != nil {
+		return nil, err
 	}
-	return bundle, nil
+
+	version, err := getRegistryBundleVersion(manifestsFS)
+	if err != nil {
+		return nil, err
+	}
+
+	annotations, err := readAnnotations(metadataFS)
+	if err != nil {
+		return nil, err
+	}
+
+	blobFS := newMultiFS()
+	blobFS.mount("manifests", manifestsFS)
+	blobFS.mount("metadata", metadataFS)
+
+	b.opts.Log("generating image layers")
+	blobData, err := getBlobData(blobFS)
+	if err != nil {
+		return nil, err
+	}
+
+	configData, err := getConfigData(annotations, blobData)
+	if err != nil {
+		return nil, err
+	}
+
+	return v1.NewDockerImage(version, configData, blobData, annotations), nil
 }
 
-func ensureImplicitProvides(cfg *v1.BundleConfig) {
-	implicitProvides := fmt.Sprintf("package(%s=%s)", cfg.Name, cfg.Version)
-	found := false
-	for _, p := range cfg.Provides {
-		if p == implicitProvides {
-			found = true
+func getRegistryBundleVersion(manifestsFS fs.FS) (string, error) {
+	manifestFiles, err := fs.ReadDir(manifestsFS, ".")
+	if err != nil {
+		return "", err
+	}
+
+	var (
+		csvData []byte
+		errs    []error
+	)
+
+	for _, manifestFile := range manifestFiles {
+		if manifestFile.IsDir() {
+			continue
+		}
+		manifestFileData, err := fs.ReadFile(manifestsFS, manifestFile.Name())
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		var m metav1.PartialObjectMetadata
+		if err := yaml.Unmarshal(manifestFileData, &m); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if m.Kind == "ClusterServiceVersion" {
+			csvData = manifestFileData
 			break
 		}
 	}
-	if !found {
-		cfg.Provides = append(cfg.Provides, implicitProvides)
+
+	if len(errs) > 0 {
+		return "", errors.Join(errs...)
 	}
+	if csvData == nil {
+		return "", errors.New("no ClusterServiceVersion found in manifests")
+	}
+
+	var csv unstructured.Unstructured
+	if err := yaml.Unmarshal(csvData, &csv); err != nil {
+		return "", err
+	}
+	version, found, err := unstructured.NestedString(csv.Object, "spec", "version")
+	if err != nil || !found {
+		// Fall back to the name if the version is not set
+		version = csv.GetName()
+	}
+
+	return version, nil
 }
 
-func getFileContent(root fs.FS, file v1.BundleSourceFile) ([]byte, error) {
-	fileName := filepath.Clean(file.Path)
-	if filepath.IsAbs(fileName) {
-		return nil, fmt.Errorf("absolute file paths are not allowed: %s", fileName)
-	}
-	return fs.ReadFile(root, fileName)
-}
-
-func getDirContent(root fs.FS, dir v1.BundleSourceDir) ([]byte, error) {
-	dirName := filepath.Clean(dir.Path)
-	if filepath.IsAbs(dirName) {
-		return nil, fmt.Errorf("absolute directory paths are not allowed: %s", dirName)
-	}
-	dirFS, err := fs.Sub(root, dirName)
+func readAnnotations(metadataFS fs.FS) (map[string]string, error) {
+	annotationsFile, err := fs.ReadFile(metadataFS, "annotations.yaml")
 	if err != nil {
-		return nil, fmt.Errorf("sub filesystem: %w", err)
-	}
-	buf := &bytes.Buffer{}
-	if err := func() error {
-		var w io.Writer = buf
-		switch dir.Compression {
-		case "gzip":
-			gzw := gzip.NewWriter(w)
-			w = gzw
-			defer gzw.Close()
-		case "":
-			// no compression
-		default:
-			return fmt.Errorf("unsupported compression type: %s", dir.Compression)
-		}
-		switch dir.Archive {
-		case "tar":
-			if err := tar.Directory(w, dirFS); err != nil {
-				return fmt.Errorf("tar directory: %w", err)
-			}
-		default:
-			return fmt.Errorf("unsupported archive type: %s", dir.Archive)
-		}
-		return nil
-	}(); err != nil {
 		return nil, err
 	}
-	return buf.Bytes(), nil
+	var annotations struct {
+		Annotations map[string]string `yaml:"annotations"`
+	}
+	if err := yaml.Unmarshal(annotationsFile, &annotations); err != nil {
+		return nil, err
+	}
+
+	annotations.Annotations["operators.operatorframework.io.bundle.manifests.v1"] = "manifests/"
+	annotations.Annotations["operators.operatorframework.io.bundle.metadata.v1"] = "metadata/"
+	return annotations.Annotations, nil
 }

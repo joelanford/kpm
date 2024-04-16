@@ -16,9 +16,28 @@ import (
 	"github.com/operator-framework/operator-registry/pkg/containertools"
 )
 
-func Catalog(catalogSpecReader io.Reader, workingFS fs.FS) (oci.Artifact, error) {
+type catalogBuilder struct {
+	RootFS fs.FS
+	opts   buildOptions
+}
+
+func NewCatalogBuilder(rootfs fs.FS, opts ...BuildOption) ArtifactBuilder {
+	b := &catalogBuilder{
+		RootFS: rootfs,
+		opts: buildOptions{
+			SpecReader: v1.DefaultFBCSpec,
+			Log:        func(string, ...interface{}) {},
+		},
+	}
+	for _, opt := range opts {
+		opt(&b.opts)
+	}
+	return b
+}
+
+func (b *catalogBuilder) BuildArtifact(_ context.Context) (oci.Artifact, error) {
 	// Read the bundle spec into a byte slice for unmarshalling.
-	catalogSpecData, err := io.ReadAll(catalogSpecReader)
+	catalogSpecData, err := io.ReadAll(b.opts.SpecReader)
 	if err != nil {
 		return nil, fmt.Errorf("read bundle spec: %w", err)
 	}
@@ -31,14 +50,14 @@ func Catalog(catalogSpecReader io.Reader, workingFS fs.FS) (oci.Artifact, error)
 
 	switch catalogSpec.Type {
 	case "fbc":
-		return buildFBCCatalog(catalogSpec, workingFS)
+		return b.buildFBCCatalog(catalogSpec)
 	case "semver":
-		return buildSemverCatalog(catalogSpec, workingFS)
+		return b.buildSemverCatalog(catalogSpec)
 	}
 	return nil, fmt.Errorf("unsupported bundle source type: %s", catalogSpec.Type)
 }
 
-func buildFBCCatalog(spec v1.CatalogSpec, workingFS fs.FS) (*v1.DockerImage, error) {
+func (b *catalogBuilder) buildFBCCatalog(spec v1.CatalogSpec) (*v1.DockerImage, error) {
 	cacheDir, err := os.MkdirTemp("", "kpm-catalog-build-cache-")
 	if err != nil {
 		return nil, err
@@ -49,11 +68,12 @@ func buildFBCCatalog(spec v1.CatalogSpec, workingFS fs.FS) (*v1.DockerImage, err
 		return nil, err
 	}
 
-	catalogFS, err := fs.Sub(workingFS, cmp.Or(spec.FBC.CatalogDir, "."))
+	catalogFS, err := fs.Sub(b.RootFS, cmp.Or(spec.FBC.CatalogDir, "."))
 	if err != nil {
 		return nil, err
 	}
 
+	b.opts.Log("building FBC cache")
 	if err := c.Build(context.Background(), catalogFS); err != nil {
 		return nil, err
 	}
@@ -62,6 +82,7 @@ func buildFBCCatalog(spec v1.CatalogSpec, workingFS fs.FS) (*v1.DockerImage, err
 	blobFS.mount("catalog", catalogFS)
 	blobFS.mount("tmp/cache", os.DirFS(cacheDir))
 
+	b.opts.Log("generating image layers")
 	blobData, err := getBlobData(blobFS)
 	if err != nil {
 		return nil, err
@@ -92,6 +113,6 @@ func buildFBCCatalog(spec v1.CatalogSpec, workingFS fs.FS) (*v1.DockerImage, err
 	return v1.NewDockerImage(cmp.Or(spec.Tag, "latest"), configData, blobData, annotations), nil
 }
 
-func buildSemverCatalog(spec v1.CatalogSpec, workingFS fs.FS) (*v1.DockerImage, error) {
+func (b *catalogBuilder) buildSemverCatalog(_ v1.CatalogSpec) (*v1.DockerImage, error) {
 	return nil, fmt.Errorf("semver catalog not yet implemented")
 }

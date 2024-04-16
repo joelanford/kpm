@@ -3,17 +3,43 @@ package v1
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"path/filepath"
 	"strings"
 	"testing/fstest"
 
 	"github.com/joelanford/kpm/internal/tar"
+	"github.com/joelanford/kpm/oci"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
+
+type ArtifactBuilder interface {
+	BuildArtifact(ctx context.Context) (oci.Artifact, error)
+}
+
+type BuildOption func(*buildOptions)
+
+func WithSpecReader(r io.Reader) BuildOption {
+	return func(opts *buildOptions) {
+		opts.SpecReader = r
+	}
+}
+
+func WithLog(log func(string, ...interface{})) BuildOption {
+	return func(opts *buildOptions) {
+		opts.Log = log
+	}
+}
+
+type buildOptions struct {
+	SpecReader io.Reader
+	Log        func(string, ...interface{})
+}
 
 func getConfigData(annotations map[string]string, blobData []byte) ([]byte, error) {
 	config := ocispec.Image{
