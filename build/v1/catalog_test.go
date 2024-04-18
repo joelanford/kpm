@@ -68,7 +68,8 @@ func TestCatalog(t *testing.T) {
 					"operators.operatorframework.io.index.configs.v1": "/configs",
 				}, actualAnnots)
 
-				expectedBlobDigest := "8d0f29630db3a4ae2b7d9b73a7d20a0ddb1e8541af5f2de67b8d73ae8c1ce49b"
+				expectedBlobDigest := "cb5b4c628b5569f9485b7bf35feefb2f0745c585bf92867ece483344e7d77a53"
+				expectedBlobDiffID := "09ef8f1c0b65748067be3e1bf0f5c9afa1c0fdf4f4124a2d227b88a7744b10d8"
 
 				// Config assertions
 				actualConfig := art.Config()
@@ -78,7 +79,7 @@ func TestCatalog(t *testing.T) {
 				defer actualConfigReader.Close()
 				actualConfigBytes, err := io.ReadAll(actualConfigReader)
 				require.NoError(t, err)
-				assert.Equal(t, fmt.Sprintf(`{"architecture":"","os":"linux","config":{"Labels":{"operators.operatorframework.io.index.cache.v1":"/tmp/cache","operators.operatorframework.io.index.configs.v1":"/configs"}},"rootfs":{"type":"layers","diff_ids":["sha256:%s"]},"history":[{"created_by":"kpm"}]}`, expectedBlobDigest), string(actualConfigBytes))
+				assert.Equal(t, fmt.Sprintf(`{"architecture":"","os":"linux","config":{"Labels":{"operators.operatorframework.io.index.cache.v1":"/tmp/cache","operators.operatorframework.io.index.configs.v1":"/configs"}},"rootfs":{"type":"layers","diff_ids":["sha256:%s"]},"history":[{"created_by":"kpm"}]}`, expectedBlobDiffID), string(actualConfigBytes))
 
 				// Blob assertions
 				actualBlobs := art.Blobs()
@@ -111,6 +112,15 @@ func TestCatalog(t *testing.T) {
 				err = json.Unmarshal(imageManifestData, &manifest)
 				require.NoError(t, err)
 
+				imageConfigReader, err := ociStore.Fetch(context.Background(), manifest.Config)
+				require.NoError(t, err)
+				defer imageConfigReader.Close()
+				imageConfigData, err := io.ReadAll(imageConfigReader)
+				require.NoError(t, err)
+				var imageConfig ocispec.Image
+				err = json.Unmarshal(imageConfigData, &imageConfig)
+				require.NoError(t, err)
+
 				applier := apply.NewFileSystemApplier(&provider{ociStore})
 				m := mount.Mount{
 					Type:    "bind",
@@ -120,7 +130,7 @@ func TestCatalog(t *testing.T) {
 				}
 				applyDesc, err := applier.Apply(context.Background(), manifest.Layers[0], []mount.Mount{m})
 				require.NoError(t, err)
-				assert.Equal(t, manifest.Layers[0].Digest.String(), applyDesc.Digest.String())
+				assert.Equal(t, imageConfig.RootFS.DiffIDs[0], applyDesc.Digest)
 			},
 		},
 	} {

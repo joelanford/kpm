@@ -6,18 +6,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/containerd/containerd/images"
-	"github.com/distribution/distribution/v3"
-	"github.com/distribution/distribution/v3/manifest"
-	"github.com/distribution/distribution/v3/manifest/schema2"
-	"github.com/joelanford/kpm/internal/tar"
 	"io"
 	"os"
 	"runtime"
 
+	"github.com/containerd/containerd/images"
+	"github.com/distribution/distribution/v3"
+	"github.com/distribution/distribution/v3/manifest"
+	"github.com/distribution/distribution/v3/manifest/schema2"
 	"github.com/docker/docker/pkg/jsonmessage"
 	dockerprogress "github.com/docker/docker/pkg/progress"
 	"github.com/docker/docker/pkg/streamformatter"
+	"github.com/joelanford/kpm/internal/tar"
 	"github.com/mattn/go-isatty"
 	"github.com/opencontainers/image-spec/specs-go"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -131,17 +131,12 @@ func push(ctx context.Context, artifact Artifact, store oras.Target) (ocispec.De
 		return ocispec.Descriptor{}, fmt.Errorf("get annotations: %w", err)
 	}
 
-	mediaType := ocispec.MediaTypeImageManifest
-	if mediaTyper, ok := artifact.(MediaTyper); ok {
-		mediaType = mediaTyper.MediaType()
-	}
-
 	var data []byte
-	switch mediaType {
+	switch artifact.MediaType() {
 	case ocispec.MediaTypeImageManifest:
 		data, _ = json.Marshal(ocispec.Manifest{
 			Versioned:    specs.Versioned{SchemaVersion: 2},
-			MediaType:    mediaType,
+			MediaType:    artifact.MediaType(),
 			ArtifactType: artifact.ArtifactType(),
 			Config:       configDesc.desc,
 			Layers:       layerDescs,
@@ -161,7 +156,7 @@ func push(ctx context.Context, artifact Artifact, store oras.Target) (ocispec.De
 		}
 		data, _ = json.Marshal(schema2.Manifest{
 			Versioned: manifest.Versioned{
-				MediaType:     mediaType,
+				MediaType:     artifact.MediaType(),
 				SchemaVersion: 2,
 			},
 			Config: distribution.Descriptor{
@@ -176,7 +171,7 @@ func push(ctx context.Context, artifact Artifact, store oras.Target) (ocispec.De
 		})
 	}
 
-	desc := content.NewDescriptorFromBytes(mediaType, data)
+	desc := content.NewDescriptorFromBytes(artifact.MediaType(), data)
 	desc.ArtifactType = artifact.ArtifactType()
 
 	if err := pushIfNotExist(ctx, store, desc, bytes.NewBuffer(data)); err != nil {

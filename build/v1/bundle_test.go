@@ -44,7 +44,8 @@ func TestBundle(t *testing.T) {
 					"operators.operatorframework.io.bundle.package.v1":   "foo",
 				}, actualAnnots)
 
-				expectedBlobDigest := "9c6c2596d2071a35a165c56cedf6d16b25363fda3cdf234e7c592f225298a26b"
+				expectedBlobDigest := "87420eb9316f54820991cd21072a71ab9a7f2234aeff71602e962687d82fd63d"
+				expectedBlobDiffID := "9c6c2596d2071a35a165c56cedf6d16b25363fda3cdf234e7c592f225298a26b"
 
 				// Config assertions
 				actualConfig := art.Config()
@@ -54,7 +55,7 @@ func TestBundle(t *testing.T) {
 				defer actualConfigReader.Close()
 				actualConfigBytes, err := io.ReadAll(actualConfigReader)
 				require.NoError(t, err)
-				assert.Equal(t, fmt.Sprintf(`{"architecture":"","os":"linux","config":{"Labels":{"operators.operatorframework.io.bundle.manifests.v1":"manifests/","operators.operatorframework.io.bundle.mediatype.v1":"registry+v1","operators.operatorframework.io.bundle.metadata.v1":"metadata/","operators.operatorframework.io.bundle.package.v1":"foo"}},"rootfs":{"type":"layers","diff_ids":["sha256:%s"]},"history":[{"created_by":"kpm"}]}`, expectedBlobDigest), string(actualConfigBytes))
+				assert.Equal(t, fmt.Sprintf(`{"architecture":"","os":"linux","config":{"Labels":{"operators.operatorframework.io.bundle.manifests.v1":"manifests/","operators.operatorframework.io.bundle.mediatype.v1":"registry+v1","operators.operatorframework.io.bundle.metadata.v1":"metadata/","operators.operatorframework.io.bundle.package.v1":"foo"}},"rootfs":{"type":"layers","diff_ids":["sha256:%s"]},"history":[{"created_by":"kpm"}]}`, expectedBlobDiffID), string(actualConfigBytes))
 
 				// Blob assertions
 				actualBlobs := art.Blobs()
@@ -87,6 +88,15 @@ func TestBundle(t *testing.T) {
 				err = json.Unmarshal(imageManifestData, &manifest)
 				require.NoError(t, err)
 
+				imageConfigReader, err := ociStore.Fetch(context.Background(), manifest.Config)
+				require.NoError(t, err)
+				defer imageConfigReader.Close()
+				imageConfigData, err := io.ReadAll(imageConfigReader)
+				require.NoError(t, err)
+				var imageConfig ocispec.Image
+				err = json.Unmarshal(imageConfigData, &imageConfig)
+				require.NoError(t, err)
+
 				applier := apply.NewFileSystemApplier(&provider{ociStore})
 				m := mount.Mount{
 					Type:    "bind",
@@ -96,7 +106,7 @@ func TestBundle(t *testing.T) {
 				}
 				applyDesc, err := applier.Apply(context.Background(), manifest.Layers[0], []mount.Mount{m})
 				require.NoError(t, err)
-				assert.Equal(t, manifest.Layers[0].Digest.String(), applyDesc.Digest.String())
+				assert.Equal(t, imageConfig.RootFS.DiffIDs[0], applyDesc.Digest)
 			},
 		},
 		{

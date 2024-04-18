@@ -3,6 +3,7 @@ package v1
 import (
 	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"io"
@@ -40,13 +41,21 @@ type buildOptions struct {
 }
 
 func getConfigData(annotations map[string]string, blobData []byte) ([]byte, error) {
+	gzr, err := gzip.NewReader(bytes.NewReader(blobData))
+	if err != nil {
+		return nil, err
+	}
+	blobDiffID, err := digest.FromReader(gzr)
+	if err != nil {
+		return nil, err
+	}
 	config := ocispec.Image{
 		Config: ocispec.ImageConfig{
 			Labels: annotations,
 		},
 		RootFS: ocispec.RootFS{
 			Type:    "layers",
-			DiffIDs: []digest.Digest{digest.FromBytes(blobData)},
+			DiffIDs: []digest.Digest{blobDiffID},
 		},
 		History: []ocispec.History{{
 			CreatedBy: "kpm",
@@ -71,10 +80,8 @@ func getBlobData(fsys ...fs.FS) ([]byte, error) {
 	}
 
 	buf := &bytes.Buffer{}
-	// TODO: figure out why gzipping is causing a problem with diffIDs not matching
-	//       btw, this somehow works with the blob being tar, but the mediatype being tar.gz
-	//gzw := gzip.NewWriter(buf)
-	tw := tar.NewWriter(buf)
+	gzw := gzip.NewWriter(buf)
+	tw := tar.NewWriter(gzw)
 	if err := kpmtar.AddFS(tw, os.DirFS(tmpDir)); err != nil {
 		return nil, err
 	}
@@ -82,8 +89,8 @@ func getBlobData(fsys ...fs.FS) ([]byte, error) {
 	if err := tw.Close(); err != nil {
 		return nil, err
 	}
-	//if err := gzw.Close(); err != nil {
-	//	return nil, err
-	//}
+	if err := gzw.Close(); err != nil {
+		return nil, err
+	}
 	return buf.Bytes(), nil
 }
