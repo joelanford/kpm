@@ -18,7 +18,7 @@ func Extract(ctx context.Context, art Artifact) (fs.FS, error) {
 	go func() {
 		defer pw.Close()
 		if _, _, err := Write(ctx, pw, art); err != nil {
-			pw.CloseWithError(err)
+			pw.CloseWithError(fmt.Errorf("write artifact: %v", err))
 		}
 	}()
 	tr, err := tarfs.New(pr)

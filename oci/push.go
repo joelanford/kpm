@@ -10,10 +10,6 @@ import (
 	"os"
 	"runtime"
 
-	"github.com/containerd/containerd/images"
-	"github.com/distribution/distribution/v3"
-	"github.com/distribution/distribution/v3/manifest"
-	"github.com/distribution/distribution/v3/manifest/schema2"
 	"github.com/docker/docker/pkg/jsonmessage"
 	dockerprogress "github.com/docker/docker/pkg/progress"
 	"github.com/docker/docker/pkg/streamformatter"
@@ -46,12 +42,12 @@ func Write(ctx context.Context, w io.Writer, a Artifact) (string, ocispec.Descri
 
 	desc, err := Push(ctx, a, tmpStore, PushOptions{})
 	if err != nil {
-		return "", ocispec.Descriptor{}, err
+		return "", ocispec.Descriptor{}, fmt.Errorf("push artifact: %v", err)
 	}
 
 	tag := a.Tag()
 	if err := tmpStore.Tag(ctx, desc, tag); err != nil {
-		return "", ocispec.Descriptor{}, err
+		return "", ocispec.Descriptor{}, fmt.Errorf("tag artifact: %v", err)
 	}
 
 	if err := tar.Directory(w, os.DirFS(tmpDir)); err != nil {
@@ -141,34 +137,10 @@ func push(ctx context.Context, artifact Artifact, store oras.Target) (ocispec.De
 			Config:       configDesc.desc,
 			Layers:       layerDescs,
 			Annotations:  annotations,
+			Subject:      artifact.Subject(),
 		})
-	case images.MediaTypeDockerSchema2Manifest:
-		var dockerLayers []distribution.Descriptor
-		for _, desc := range layerDescs {
-			dockerLayers = append(dockerLayers, distribution.Descriptor{
-				MediaType:   desc.MediaType,
-				Digest:      desc.Digest,
-				Size:        desc.Size,
-				URLs:        desc.URLs,
-				Annotations: desc.Annotations,
-				Platform:    desc.Platform,
-			})
-		}
-		data, _ = json.Marshal(schema2.Manifest{
-			Versioned: manifest.Versioned{
-				MediaType:     artifact.MediaType(),
-				SchemaVersion: 2,
-			},
-			Config: distribution.Descriptor{
-				MediaType:   configDesc.desc.MediaType,
-				Digest:      configDesc.desc.Digest,
-				Size:        configDesc.desc.Size,
-				URLs:        configDesc.desc.URLs,
-				Annotations: configDesc.desc.Annotations,
-				Platform:    configDesc.desc.Platform,
-			},
-			Layers: dockerLayers,
-		})
+	default:
+		return ocispec.Descriptor{}, fmt.Errorf("unsupported artifact media type %q", artifact.MediaType())
 	}
 
 	desc := content.NewDescriptorFromBytes(artifact.MediaType(), data)

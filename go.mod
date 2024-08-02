@@ -6,9 +6,7 @@ require (
 	github.com/Masterminds/semver/v3 v3.2.1
 	github.com/charmbracelet/lipgloss v0.9.1
 	github.com/containerd/containerd v1.7.14
-	github.com/containerd/log v0.1.0
 	github.com/containers/image/v5 v5.30.0
-	github.com/distribution/distribution/v3 v3.0.0-alpha.1
 	github.com/docker/docker v25.0.5+incompatible
 	github.com/google/go-containerregistry v0.19.0
 	github.com/mattn/go-isatty v0.0.20
@@ -21,7 +19,7 @@ require (
 	github.com/stretchr/testify v1.9.0
 	golang.org/x/sync v0.7.0
 	k8s.io/apimachinery v0.29.3
-	oras.land/oras-go/v2 v2.3.0
+	oras.land/oras-go/v2 v2.5.0
 	sigs.k8s.io/yaml v1.4.0
 )
 
@@ -41,6 +39,7 @@ require (
 	github.com/containerd/cgroups/v3 v3.0.2 // indirect
 	github.com/containerd/continuity v0.4.2 // indirect
 	github.com/containerd/errdefs v0.1.0 // indirect
+	github.com/containerd/log v0.1.0 // indirect
 	github.com/containerd/stargz-snapshotter/estargz v0.15.1 // indirect
 	github.com/containerd/ttrpc v1.2.3 // indirect
 	github.com/containerd/typeurl/v2 v2.1.1 // indirect

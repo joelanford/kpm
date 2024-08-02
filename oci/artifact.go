@@ -3,6 +3,8 @@ package oci
 import (
 	"bytes"
 	"io"
+
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 type Artifact interface {
@@ -10,6 +12,7 @@ type Artifact interface {
 	ArtifactType() string
 	Config() Blob
 	Annotations() (map[string]string, error)
+	Subject() *ocispec.Descriptor
 	SubArtifacts() []Artifact
 	Blobs() []Blob
 	Tag() string

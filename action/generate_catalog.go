@@ -5,7 +5,6 @@ import (
 	"cmp"
 	"context"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -16,10 +15,9 @@ import (
 	"time"
 
 	"github.com/Masterminds/semver/v3"
-	buildv1 "github.com/joelanford/kpm/build/v1"
+	v1 "github.com/joelanford/kpm/api/v1"
 	"github.com/joelanford/kpm/internal/fsutil"
 	"github.com/joelanford/kpm/internal/registryv1"
-	"github.com/joelanford/kpm/internal/remote"
 	"github.com/joelanford/kpm/oci"
 	"github.com/sirupsen/logrus"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -29,26 +27,19 @@ import (
 )
 
 type GenerateCatalog struct {
-	BundleRepository string
-	Bundles          []oci.Artifact
-	PushBundles      bool
-	Tag              string
-
-	Log func(string, ...interface{})
+	Bundles []v1.KPM
+	Tag     string
 }
 
 func (a *GenerateCatalog) Run(_ context.Context) (fs.FS, error) {
 	if len(a.Bundles) == 0 {
 		return nil, fmt.Errorf("no bundles provided")
 	}
-	opts := []buildv1.BuildOption{}
-	if a.Log != nil {
-		opts = append(opts, buildv1.WithLog(a.Log))
-	}
 	return a.generate()
 }
 
 type bundleMetadata struct {
+	reference   string
 	packageName string
 	version     semver.Version
 	release     string
@@ -71,48 +62,46 @@ func (i bundleMetadata) String() string {
 }
 
 func (a *GenerateCatalog) generate() (fs.FS, error) {
-	if a.BundleRepository == "" {
-		return nil, fmt.Errorf("bundle repository is required")
-	}
-
 	packages := map[string]map[bundleMetadata]oci.Artifact{}
-	a.Log("loading bundles")
 	for _, bundle := range a.Bundles {
-		annotations, err := bundle.Annotations()
+		annotations, err := bundle.Artifact.Annotations()
 		if err != nil {
-			return nil, fmt.Errorf("failed to get annotations for bundle with tag %q: %w", bundle.Tag(), err)
+			return nil, fmt.Errorf("failed to get annotations for bundle with tag %q: %w", bundle.Artifact.Tag(), err)
 		}
 		if mediaType, foundMediaType := annotations["operators.operatorframework.io.bundle.mediatype.v1"]; !foundMediaType || mediaType != "registry+v1" {
-			return nil, fmt.Errorf("bundle with tag %q is not a catalog bundle", bundle.Tag())
+			return nil, fmt.Errorf("bundle with tag %q is not a catalog bundle", bundle.Artifact.Tag())
 		}
 		packageName, foundPackageName := annotations["operators.operatorframework.io.bundle.package.v1"]
 		if !foundPackageName {
-			return nil, fmt.Errorf("failed to find package name for bundle with tag %q", bundle.Tag())
+			return nil, fmt.Errorf("failed to find package name for bundle with tag %q", bundle.Artifact.Tag())
 		}
 		release, releaseFound := annotations["operators.operatorframework.io.bundle.release.v1"]
 		if !releaseFound {
 			release = "0"
 		}
-		version, err := getBundleVersion(bundle, annotations["operators.operatorframework.io.bundle.manifests.v1"])
+		version, err := getBundleVersion(bundle.Artifact, annotations["operators.operatorframework.io.bundle.manifests.v1"])
 		if err != nil {
-			return nil, fmt.Errorf("failed to get version for bundle with tag %q: %w", bundle.Tag(), err)
+			return nil, fmt.Errorf("failed to get version for bundle with tag %q: %w", bundle.Artifact.Tag(), err)
 		}
 		bm := bundleMetadata{
+			reference:   fmt.Sprintf("%s@%s", bundle.OriginReference.String(), bundle.Descriptor.Digest.String()),
 			packageName: packageName,
 			version:     *version,
 			release:     release,
 		}
+		fmt.Println("  - found bundle", bm.String())
 
 		bundleMetadatas, ok := packages[packageName]
 		if !ok {
 			bundleMetadatas = map[bundleMetadata]oci.Artifact{}
 		}
-		bundleMetadatas[bm] = bundle
+		bundleMetadatas[bm] = bundle.Artifact
 		packages[packageName] = bundleMetadatas
 	}
 
 	catalogFsys := fstest.MapFS{}
 	for _, pkgName := range sets.List(sets.KeySet(packages)) {
+		fmt.Println("  - building package", pkgName)
 		pkg := packages[pkgName]
 		channelBundles := map[string][]bundleMetadata{}
 		highestVersion := semver.Version{}
@@ -129,6 +118,7 @@ func (a *GenerateCatalog) generate() (fs.FS, error) {
 		}
 		var channels []declcfg.Channel
 		for chName, bundleMetadatas := range channelBundles {
+			fmt.Println("    - building channel", chName)
 			slices.SortFunc(bundleMetadatas, func(i, j bundleMetadata) int {
 				return i.Compare(j)
 			})
@@ -151,6 +141,7 @@ func (a *GenerateCatalog) generate() (fs.FS, error) {
 						break
 					}
 				}
+				fmt.Println("      - adding entry", entry.Name)
 				ch.Entries = append(ch.Entries, entry)
 				stack = append(stack, bm)
 			}
@@ -165,10 +156,6 @@ func (a *GenerateCatalog) generate() (fs.FS, error) {
 		slices.SortFunc(bms, func(i, j bundleMetadata) int { return i.Compare(j) })
 		for _, bm := range bms {
 			art := pkg[bm]
-			_, desc, err := oci.Write(context.Background(), io.Discard, art)
-			if err != nil {
-				return nil, fmt.Errorf("failed to get bundle descriptor for bundle %q: %w", bm.String(), err)
-			}
 			bundleFS, err := oci.Extract(context.Background(), art)
 			if err != nil {
 				return nil, fmt.Errorf("failed to get filesystem from bundle: %w", err)
@@ -188,10 +175,9 @@ func (a *GenerateCatalog) generate() (fs.FS, error) {
 					Registry:         nil,
 					AllowedRefMask:   action.RefBundleDir,
 					Migrate:          true,
-					ImageRefTemplate: template.Must(template.New("image").Parse(fmt.Sprintf("%s@%s", a.BundleRepository, desc.Digest.String()))),
+					ImageRefTemplate: template.Must(template.New("image").Parse(bm.reference)),
 				}
 				logrus.SetLevel(logrus.PanicLevel)
-				a.Log("rendering bundle %q into catalog", bm.String())
 				tmpFbc, err := render.Run(context.Background())
 				if err != nil {
 					return fmt.Errorf("failed to render bundle image: %w", err)
@@ -200,17 +186,6 @@ func (a *GenerateCatalog) generate() (fs.FS, error) {
 				tmpFbc.Bundles[0].Name = bm.String()
 				fbc.Bundles = append(fbc.Bundles, tmpFbc.Bundles[0])
 
-				if a.PushBundles {
-					a.Log("pushing image for bundle %q", bm.String())
-					imageRef := tmpFbc.Bundles[0].Image
-					target, err := remote.NewRepository(imageRef)
-					if err != nil {
-						return fmt.Errorf("failed to get repository for reference %q: %w", imageRef, err)
-					}
-					if _, err := oci.Push(context.Background(), art, target, oci.PushOptions{}); err != nil {
-						return fmt.Errorf("failed to push image for bundle %q: %w", bm.String(), err)
-					}
-				}
 				return nil
 			}(); err != nil {
 				return nil, err

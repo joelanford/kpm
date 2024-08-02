@@ -60,7 +60,7 @@ func (b *catalogBuilder) BuildArtifact(_ context.Context) (oci.Artifact, error) 
 	return nil, fmt.Errorf("unsupported bundle source type: %s", catalogSpec.Type)
 }
 
-func (b *catalogBuilder) buildFBCCatalog(spec v1.CatalogSpec) (*v1.DockerImage, error) {
+func (b *catalogBuilder) buildFBCCatalog(spec v1.CatalogSpec) (*v1.OCIManifest, error) {
 	tmpDir, err := os.MkdirTemp("", "kpm-catalog-build-")
 	if err != nil {
 		return nil, err
@@ -126,9 +126,9 @@ func (b *catalogBuilder) buildFBCCatalog(spec v1.CatalogSpec) (*v1.DockerImage, 
 		return nil, err
 	}
 
-	return v1.NewDockerImage("latest", configData, blobData, annotations), nil
+	return v1.NewOCIManifest("latest", configData, blobData, annotations), nil
 }
 
-func (b *catalogBuilder) buildSemverCatalog(_ v1.CatalogSpec) (*v1.DockerImage, error) {
+func (b *catalogBuilder) buildSemverCatalog(_ v1.CatalogSpec) (*v1.OCIManifest, error) {
 	return nil, fmt.Errorf("semver catalog not yet implemented")
 }

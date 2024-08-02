@@ -1,11 +1,11 @@
 package cli
 
 import (
-	"github.com/joelanford/kpm/internal/console"
+	"fmt"
+	"os"
 )
 
-func handleError(err error) {
-	if err != nil {
-		console.Fatalf(1, "💥 %v", err)
-	}
+func handleError(errMsg string) {
+	fmt.Println(errMsg)
+	os.Exit(1)
 }

@@ -11,6 +11,7 @@ func Root() *cobra.Command {
 	cmd.AddCommand(
 		Build(),
 		Inspect(),
+		Push(),
 	)
 	return cmd
 }

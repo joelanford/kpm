@@ -3,12 +3,15 @@ package transport
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
+
+	"github.com/containers/image/v5/docker/reference"
+	apiv1 "github.com/joelanford/kpm/api/v1"
 	"github.com/joelanford/kpm/internal/tar"
 	kpmoci "github.com/joelanford/kpm/oci"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2/content/oci"
-	"os"
-	"strings"
 )
 
 type OCIArchiveTransport struct{}
@@ -30,8 +33,9 @@ func (t *OCIArchiveTransport) Protocol() string {
 }
 
 type OCIArchiveTarget struct {
-	Filename string
-	Tag      string
+	Filename        string
+	OriginReference reference.Named
+	Tag             string
 }
 
 func (t *OCIArchiveTarget) Push(ctx context.Context, artifact kpmoci.Artifact) (string, ocispec.Descriptor, error) {
@@ -51,10 +55,21 @@ func (t *OCIArchiveTarget) Push(ctx context.Context, artifact kpmoci.Artifact) (
 		return "", ocispec.Descriptor{}, err
 	}
 
-	tag, desc, err := (&ORASTarget{
+	orasTarget := &ORASTarget{
 		Remote: tmpStore,
 		Tag:    t.Tag,
-	}).Push(ctx, artifact)
+	}
+	tag, desc, err := orasTarget.Push(ctx, artifact)
+	if err != nil {
+		return "", ocispec.Descriptor{}, err
+	}
+	if t.OriginReference != nil {
+		originRef := apiv1.NewOriginReference(desc, t.OriginReference)
+		_, _, err := orasTarget.Push(ctx, originRef)
+		if err != nil {
+			return "", ocispec.Descriptor{}, err
+		}
+	}
 
 	if err := tar.Directory(f, os.DirFS(tmpDir)); err != nil {
 		return "", ocispec.Descriptor{}, err

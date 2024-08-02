@@ -54,7 +54,7 @@ func (b *bundleBuilder) BuildArtifact(_ context.Context) (oci.Artifact, error) {
 	return nil, fmt.Errorf("unsupported bundle source type: %s", bundleSpec.Type)
 }
 
-func (b *bundleBuilder) buildRegistryV1(spec v1.RegistryV1Source) (*v1.DockerImage, error) {
+func (b *bundleBuilder) buildRegistryV1(spec v1.RegistryV1Source) (*v1.OCIManifest, error) {
 	manifestsFS, err := fs.Sub(b.RootFS, cmp.Or(spec.ManifestsDir, "manifests"))
 	if err != nil {
 		return nil, err
@@ -75,6 +75,11 @@ func (b *bundleBuilder) buildRegistryV1(spec v1.RegistryV1Source) (*v1.DockerIma
 		return nil, err
 	}
 
+	pkgName, pkgNameFound := annotations["operators.operatorframework.io.bundle.package.v1"]
+	if !pkgNameFound {
+		return nil, fmt.Errorf("registry+v1 bundle is missing required package name annotation")
+	}
+
 	release, foundRelease := annotations["operators.operatorframework.io.bundle.release.v1"]
 	if !foundRelease {
 		release = "0"
@@ -93,6 +98,6 @@ func (b *bundleBuilder) buildRegistryV1(spec v1.RegistryV1Source) (*v1.DockerIma
 		return nil, err
 	}
 
-	tag := fmt.Sprintf("v%s-%s", version, release)
-	return v1.NewDockerImage(tag, configData, blobData, annotations), nil
+	tag := fmt.Sprintf("%s-v%s-%s", pkgName, version, release)
+	return v1.NewOCIManifest(tag, configData, blobData, annotations), nil
 }
