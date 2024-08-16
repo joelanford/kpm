@@ -11,7 +11,6 @@ import (
 	"slices"
 	"strings"
 	"testing/fstest"
-	"text/template"
 	"time"
 
 	"github.com/Masterminds/semver/v3"
@@ -89,7 +88,7 @@ func (a *GenerateCatalog) generate() (fs.FS, error) {
 			version:     *version,
 			release:     release,
 		}
-		fmt.Println("  - found bundle", bm.String())
+		fmt.Printf("found bundle %q\n", bm.String())
 
 		bundleMetadatas, ok := packages[packageName]
 		if !ok {
@@ -101,7 +100,7 @@ func (a *GenerateCatalog) generate() (fs.FS, error) {
 
 	catalogFsys := fstest.MapFS{}
 	for _, pkgName := range sets.List(sets.KeySet(packages)) {
-		fmt.Println("  - building package", pkgName)
+		fmt.Printf("building package %q\n", pkgName)
 		pkg := packages[pkgName]
 		channelBundles := map[string][]bundleMetadata{}
 		highestVersion := semver.Version{}
@@ -118,7 +117,6 @@ func (a *GenerateCatalog) generate() (fs.FS, error) {
 		}
 		var channels []declcfg.Channel
 		for chName, bundleMetadatas := range channelBundles {
-			fmt.Println("    - building channel", chName)
 			slices.SortFunc(bundleMetadatas, func(i, j bundleMetadata) int {
 				return i.Compare(j)
 			})
@@ -141,7 +139,6 @@ func (a *GenerateCatalog) generate() (fs.FS, error) {
 						break
 					}
 				}
-				fmt.Println("      - adding entry", entry.Name)
 				ch.Entries = append(ch.Entries, entry)
 				stack = append(stack, bm)
 			}
@@ -171,11 +168,10 @@ func (a *GenerateCatalog) generate() (fs.FS, error) {
 					return err
 				}
 				render := action.Render{
-					Refs:             []string{tmpDir},
-					Registry:         nil,
-					AllowedRefMask:   action.RefBundleDir,
-					Migrate:          true,
-					ImageRefTemplate: template.Must(template.New("image").Parse(bm.reference)),
+					Refs:           []string{tmpDir},
+					Registry:       nil,
+					AllowedRefMask: action.RefBundleDir,
+					Migrate:        true,
 				}
 				logrus.SetLevel(logrus.PanicLevel)
 				tmpFbc, err := render.Run(context.Background())
@@ -184,6 +180,7 @@ func (a *GenerateCatalog) generate() (fs.FS, error) {
 				}
 
 				tmpFbc.Bundles[0].Name = bm.String()
+				tmpFbc.Bundles[0].Image = bm.reference
 				fbc.Bundles = append(fbc.Bundles, tmpFbc.Bundles[0])
 
 				return nil
@@ -222,5 +219,5 @@ func getBundleVersion(bundle oci.Artifact, manifestsPath string) (*semver.Versio
 }
 
 func channelNameForVersion(version semver.Version) string {
-	return fmt.Sprintf("stable-v%d", version.Major())
+	return fmt.Sprintf("default-v%d", version.Major())
 }

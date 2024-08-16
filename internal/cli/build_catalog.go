@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/containers/image/v5/docker/reference"
@@ -41,29 +42,32 @@ building a catalog.
 			ctx := cmd.Context()
 
 			catalogDirectory := args[0]
-			catalogFS := os.DirFS(catalogDirectory)
-
 			originRepository := args[1]
 			originRepoRef, err := reference.ParseNamed(originRepository)
 			if err != nil {
 				handleError(fmt.Sprintf("parse origin repository %q: %w", originRepository, err))
 			}
 
-			var specReader io.Reader
+			var (
+				specReader io.Reader
+				catalogFS  fs.FS
+			)
 			if specFile != "" {
+				catalogFS = os.DirFS(catalogDirectory)
+
 				var err error
 				specReader, err = os.Open(specFile)
 				if err != nil {
 					handleError(fmt.Sprintf("open spec file: %w", err))
 				}
 			} else if rawFBC {
+				catalogFS = os.DirFS(catalogDirectory)
 				specReader = strings.NewReader(v1.DefaultFBCSpec)
 			} else {
-				bundles, err := getBundleArtifacts(ctx, catalogFS)
+				bundles, err := getBundleArtifacts(ctx, catalogDirectory)
 				if err != nil {
 					handleError(fmt.Sprintf("get bundle artifacts: %w", err))
 				}
-				fmt.Printf("Found %d bundles\n", len(bundles))
 				gc := action.GenerateCatalog{
 					Bundles: bundles,
 				}
@@ -103,8 +107,8 @@ building a catalog.
 	return cmd
 }
 
-func getBundleArtifacts(ctx context.Context, catalogFS fs.FS) ([]v1.KPM, error) {
-	bundleFiles, err := fs.Glob(catalogFS, "*.bundle.kpm")
+func getBundleArtifacts(ctx context.Context, catalogDir string) ([]v1.KPM, error) {
+	bundleFiles, err := filepath.Glob(filepath.Join(catalogDir, "*.bundle.kpm"))
 	if err != nil {
 		return nil, err
 	}

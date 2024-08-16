@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 
+	"github.com/containers/image/v5/docker/reference"
 	"github.com/joelanford/kpm/internal/fsutil"
 	kpmtar "github.com/joelanford/kpm/internal/tar"
 	"github.com/joelanford/kpm/oci"
@@ -35,9 +36,16 @@ func WithLog(log func(string, ...interface{})) BuildOption {
 	}
 }
 
+func WithOriginRepository(ref reference.Named) BuildOption {
+	return func(opts *buildOptions) {
+		opts.OriginRepository = ref
+	}
+}
+
 type buildOptions struct {
-	SpecReader io.Reader
-	Log        func(string, ...interface{})
+	SpecReader       io.Reader
+	OriginRepository reference.Named
+	Log              func(string, ...interface{})
 }
 
 func getConfigData(annotations map[string]string, blobData []byte) ([]byte, error) {
