@@ -1,0 +1,4 @@
+apiVersion: specs.kpm.io/v1
+kind: Bundle
+registryNamespace: quay.io/joelanford
+bundleRoot: ./0.0.11/

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -10,117 +11,260 @@ import (
 	"strings"
 
 	"github.com/containers/image/v5/docker/reference"
-	"github.com/joelanford/kpm/action"
-	v1 "github.com/joelanford/kpm/api/v1"
-	buildv1 "github.com/joelanford/kpm/build/v1"
-	"github.com/joelanford/kpm/transport"
+	"github.com/joelanford/kpm/internal/action"
+	specsv1 "github.com/joelanford/kpm/internal/api/specs/v1"
+	"github.com/joelanford/kpm/internal/fsutil"
+	"github.com/joelanford/kpm/internal/kpm"
+	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
+	"sigs.k8s.io/yaml"
+
+	"github.com/operator-framework/operator-registry/alpha/action/migrations"
+	"github.com/operator-framework/operator-registry/alpha/declcfg"
+	"github.com/operator-framework/operator-registry/alpha/template/basic"
+	"github.com/operator-framework/operator-registry/alpha/template/semver"
+	"github.com/operator-framework/operator-registry/pkg/cache"
+	"github.com/operator-framework/operator-registry/pkg/containertools"
 )
 
 func BuildCatalog() *cobra.Command {
 	var (
-		specFile string
-		rawFBC   bool
+		outputFile string
 	)
-
 	cmd := &cobra.Command{
-		Use:   "catalog <catalogDir> <originRepository>",
+		Use:   "catalog <catalogSpecFile>",
 		Short: "Build a catalog",
-		Long: `Build a catalog
-
-This command builds a catalog based on an optional spec file. If a spec file is not provided
-the default FBC spec is used. The spec file can be in JSON or YAML format.
-
-The originRepository argument is a reference to an image repository. The origin reference is
-stored in the bundle and is used by other tools to determine the origin of the bundle, for
-example, when the kpm file is pushed to a registry or when it needs to be referenced when
-building a catalog.
+		Long: `Build a kpm catalog from the specified catalog directory.
 `,
-		Args: cobra.ExactArgs(2),
+		Args: cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
-			cmd.SilenceUsage = true
 			ctx := cmd.Context()
-
-			catalogDirectory := args[0]
-			originRepository := args[1]
-			originRepoRef, err := reference.ParseNamed(originRepository)
-			if err != nil {
-				handleError(fmt.Sprintf("parse origin repository %q: %w", originRepository, err))
+			specFileName := args[0]
+			if err := buildCatalog(ctx, specFileName, outputFile); err != nil {
+				cmd.PrintErrf("failed to build catalog: %v\n", err)
+				os.Exit(1)
 			}
-
-			var (
-				specReader io.Reader
-				catalogFS  fs.FS
-			)
-			if specFile != "" {
-				catalogFS = os.DirFS(catalogDirectory)
-
-				var err error
-				specReader, err = os.Open(specFile)
-				if err != nil {
-					handleError(fmt.Sprintf("open spec file: %w", err))
-				}
-			} else if rawFBC {
-				catalogFS = os.DirFS(catalogDirectory)
-				specReader = strings.NewReader(v1.DefaultFBCSpec)
-			} else {
-				bundles, err := getBundleArtifacts(ctx, catalogDirectory)
-				if err != nil {
-					handleError(fmt.Sprintf("get bundle artifacts: %w", err))
-				}
-				gc := action.GenerateCatalog{
-					Bundles: bundles,
-				}
-				catalogFS, err = gc.Run(ctx)
-				if err != nil {
-					handleError(fmt.Sprintf("get catalog FS: %w", err))
-				}
-				specReader = strings.NewReader(v1.DefaultFBCSpec)
-			}
-
-			cb := buildv1.NewCatalogBuilder(catalogFS,
-				buildv1.WithSpecReader(specReader),
-			)
-
-			catalog, err := cb.BuildArtifact(ctx)
-			if err != nil {
-				handleError(fmt.Sprintf("failed to build catalog: %w", err))
-			}
-
-			outputFileName := fmt.Sprintf("%s.catalog.kpm", catalog.Tag())
-			target := &transport.OCIArchiveTarget{
-				Filename:        outputFileName,
-				OriginReference: originRepoRef,
-			}
-
-			tag, desc, err := target.Push(ctx, catalog)
-			if err != nil {
-				handleError(fmt.Sprintf("failed to write catalog file: %w", err))
-			}
-			fmt.Printf("Successfully built catalog %q from %q (tag: %q, digest %q)\n", outputFileName, catalogDirectory, tag, desc.Digest.String())
 		},
 	}
-	cmd.Flags().StringVar(&specFile, "spec-file", "", "spec file to use for building the catalog")
-	cmd.Flags().BoolVar(&rawFBC, "raw-fbc", false, "assume the catalog directory is raw FBC and build it directly")
-
-	cmd.MarkFlagsMutuallyExclusive("spec-file", "raw-fbc")
+	cmd.Flags().StringVarP(&outputFile, "output", "o", "",
+		"Output file (default: <repoBaseName>-<tag>.kpm)")
 	return cmd
 }
 
-func getBundleArtifacts(ctx context.Context, catalogDir string) ([]v1.KPM, error) {
-	bundleFiles, err := filepath.Glob(filepath.Join(catalogDir, "*.bundle.kpm"))
+// buildCatalog reads a spec file, builds a kpm catalog from the spec, and writes it to an output file.
+//
+// TODO: Move this logic outside the CLI package to make it easier to test and more reusable.
+func buildCatalog(ctx context.Context, specFileName, outputFile string) error {
+	spec, err := readCatalogSpec(specFileName)
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("failed to read spec file: %w", err)
 	}
 
-	bundles := make([]v1.KPM, 0, len(bundleFiles))
-	for _, bundleFile := range bundleFiles {
-		bundle, err := v1.LoadKPM(ctx, bundleFile)
+	tagRef, err := getCatalogRef(spec.Tag)
+	if err != nil {
+		return fmt.Errorf("failed to get tagged reference from spec file: %w", err)
+	}
+
+	rootDir := filepath.Dir(specFileName)
+
+	var (
+		fbcFsys     fs.FS
+		fbcCacheDir string
+	)
+	switch spec.Source.SourceType {
+	case specsv1.CatalogSpecSourceTypeFBC:
+		fbcFsys = os.DirFS(filepath.Join(rootDir, spec.Source.FBC.CatalogRoot))
+		fbc, err := declcfg.LoadFS(ctx, fbcFsys)
 		if err != nil {
-			return nil, err
+			return fmt.Errorf("failed to load catalog: %v", err)
 		}
-		bundles = append(bundles, *bundle)
+		if _, err := declcfg.ConvertToModel(*fbc); err != nil {
+			return fmt.Errorf("failed to validate catalog: %v", err)
+		}
+
+		fbcCacheDir, err = buildCache(ctx, fbcFsys, spec.Source.FBC.CacheFormat)
+		if err != nil {
+			return fmt.Errorf("failed to build cache: %v", err)
+		}
+		defer os.RemoveAll(fbcCacheDir)
+	case specsv1.CatalogSpecSourceTypeFBCTemplate:
+		templateSchema, templateData, err := getTemplateData(rootDir, spec.Source.FBCTemplate.TemplateFile)
+		if err != nil {
+			return fmt.Errorf("failed to get template data: %v", err)
+		}
+		templateOutputTmpDir, err := renderTemplate(ctx, templateSchema, templateData, spec.Source.FBCTemplate.MigrationLevel)
+		if err != nil {
+			return fmt.Errorf("failed to render template: %v", err)
+		}
+		defer os.RemoveAll(templateOutputTmpDir)
+		fbcFsys = os.DirFS(templateOutputTmpDir)
+		fbcCacheDir, err = buildCache(ctx, fbcFsys, spec.Source.FBCTemplate.CacheFormat)
+		if err != nil {
+			return fmt.Errorf("failed to build cache: %v", err)
+		}
+		defer os.RemoveAll(fbcCacheDir)
+	default:
+		return fmt.Errorf("unsupported source type %q", spec.Source.SourceType)
 	}
 
-	return bundles, nil
+	annotations := map[string]string{
+		containertools.ConfigsLocationLabel: "/configs",
+	}
+
+	configsFsys, err := fsutil.Prefix(fbcFsys, "/configs")
+	if err != nil {
+		return fmt.Errorf("failed to create configs fs: %v", err)
+	}
+	cacheFsys, err := fsutil.Prefix(os.DirFS(fbcCacheDir), "/tmp/cache")
+	if err != nil {
+		return fmt.Errorf("failed to create cache fs: %v", err)
+	}
+	layers := []fs.FS{
+		configsFsys,
+		cacheFsys,
+	}
+
+	// Open output file for writing
+	if outputFile == "" {
+		pathParts := strings.Split(reference.Path(reference.TrimNamed(tagRef)), "/")
+		baseName := pathParts[len(pathParts)-1]
+		outputFile = fmt.Sprintf("%s-%s.catalog.kpm", baseName, tagRef.Tag())
+	}
+	kpmFile, err := os.Create(outputFile)
+	if err != nil {
+		return fmt.Errorf("failed to create output file: %v", err)
+	}
+
+	// Write it!
+	desc, err := kpm.WriteImageManifest(kpmFile, tagRef, layers, annotations)
+	if err != nil {
+		// Clean up the file if we failed to write it
+		_ = os.Remove(outputFile)
+		return fmt.Errorf("failed to write kpm file: %v", err)
+	}
+
+	fmt.Printf("Catalog written to %s with tag %q (digest: %s)\n", outputFile, tagRef, desc.Digest)
+	return nil
+}
+
+func readCatalogSpec(specFile string) (*specsv1.Catalog, error) {
+	specData, err := os.ReadFile(specFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read spec file: %w", err)
+	}
+
+	var spec specsv1.Catalog
+	if err := yaml.Unmarshal(specData, &spec); err != nil {
+		return nil, fmt.Errorf("failed to parse catalog spec: %w", err)
+	}
+	expectedGVK := specsv1.GroupVersion.WithKind(specsv1.KindCatalog)
+	if spec.GroupVersionKind() != expectedGVK {
+		return nil, fmt.Errorf("unsupported spec API found: %s, expected %s", spec.GroupVersionKind(), expectedGVK)
+	}
+	return &spec, nil
+}
+
+func getCatalogRef(refStr string) (reference.NamedTagged, error) {
+	ref, err := reference.ParseNamed(refStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse tag %q from spec file: %v", refStr, err)
+	}
+	tagRef, ok := ref.(reference.NamedTagged)
+	if !ok {
+		return reference.WithTag(ref, "latest")
+	}
+	return tagRef, nil
+}
+
+func getTemplateData(rootDir, templateFile string) (string, []byte, error) {
+	templateData, err := os.ReadFile(filepath.Join(rootDir, templateFile))
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to read template file: %v", err)
+	}
+
+	var (
+		schema    string
+		metaCount int
+	)
+	if err := declcfg.WalkMetasReader(bytes.NewReader(templateData), func(m *declcfg.Meta, err error) error {
+		if err != nil {
+			return err
+		}
+		metaCount++
+		if metaCount > 1 {
+			return fmt.Errorf("template file contains more than one template spec")
+		}
+		schema = m.Schema
+		return nil
+	}); err != nil {
+		return "", nil, fmt.Errorf("failed to read meta from template file: %w", err)
+	}
+	return schema, templateData, nil
+}
+
+func renderTemplate(ctx context.Context, templateSchema string, templateData []byte, migrationLevel string) (string, error) {
+	if migrationLevel == "" {
+		migrationLevel = migrations.NoMigrations
+	}
+	m, err := migrations.NewMigrations(migrationLevel)
+	if err != nil {
+		return "", fmt.Errorf("failed to configure migrations: %w", err)
+	}
+
+	renderBundle := func(ctx context.Context, ref string) (*declcfg.DeclarativeConfig, error) {
+		r := action.Render{
+			Migrations: m,
+		}
+		return r.Render(ctx, ref)
+	}
+
+	logrus.SetOutput(io.Discard)
+
+	var fbc *declcfg.DeclarativeConfig
+	switch templateSchema {
+	case "olm.template.basic":
+		basicTemplate := basic.Template{
+			RenderBundle: renderBundle,
+		}
+		fbc, err = basicTemplate.Render(ctx, bytes.NewReader(templateData))
+	case "olm.semver":
+		semverTemplate := semver.Template{
+			Data:         bytes.NewReader(templateData),
+			RenderBundle: renderBundle,
+		}
+		fbc, err = semverTemplate.Render(ctx)
+	default:
+		return "", fmt.Errorf("unsupported template schema %q", templateSchema)
+	}
+	if err != nil {
+		return "", err
+	}
+	templateOutputTmpDir, err := os.MkdirTemp("", "kpm-build-catalog-template-output")
+	if err != nil {
+		return "", fmt.Errorf("failed to create template output dir: %w", err)
+	}
+	if err := declcfg.WriteFS(*fbc, templateOutputTmpDir, declcfg.WriteYAML, ".yaml"); err != nil {
+		return "", fmt.Errorf("failed to write rendered template to fs: %w", err)
+	}
+	return templateOutputTmpDir, nil
+}
+
+func buildCache(ctx context.Context, fbcFsys fs.FS, backendName string) (string, error) {
+	tmpCacheDir, err := os.MkdirTemp("", "kpm-build-catalog-cache")
+	if err != nil {
+		return "", fmt.Errorf("failed to create cache dir: %v", err)
+	}
+
+	fbcCache, err := cache.New(tmpCacheDir, cache.WithBackendName(backendName))
+	if err != nil {
+		return "", fmt.Errorf("failed to create cache: %v", err)
+	}
+
+	if err := fbcCache.Build(ctx, fbcFsys); err != nil {
+		return "", fmt.Errorf("failed to build cache: %w", err)
+	}
+	if err := fbcCache.Close(); err != nil {
+		return "", fmt.Errorf("failed to close cache: %w", err)
+	}
+	return tmpCacheDir, nil
 }

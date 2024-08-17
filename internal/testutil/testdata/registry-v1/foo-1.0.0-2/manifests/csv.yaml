@@ -1,6 +1,0 @@
-kind: ClusterServiceVersion
-apiVersion: operators.coreos.com/v1alpha1
-metadata:
-  name: foo.v1.0.0
-spec:
-  version: "1.0.0"
