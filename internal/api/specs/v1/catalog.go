@@ -27,11 +27,9 @@ type CatalogSpecSource struct {
 
 type FBCSource struct {
 	CatalogRoot string `json:"catalogRoot"`
-	CacheFormat string `json:"cacheFormat,omitempty"`
 }
 
 type FBCTemplateSource struct {
 	TemplateFile   string `json:"templateFile"`
 	MigrationLevel string `json:"migrationLevel,omitempty"`
-	CacheFormat    string `json:"cacheFormat,omitempty"`
 }

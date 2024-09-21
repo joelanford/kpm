@@ -23,7 +23,6 @@ import (
 	"github.com/operator-framework/operator-registry/alpha/declcfg"
 	"github.com/operator-framework/operator-registry/alpha/template/basic"
 	"github.com/operator-framework/operator-registry/alpha/template/semver"
-	"github.com/operator-framework/operator-registry/pkg/cache"
 	"github.com/operator-framework/operator-registry/pkg/containertools"
 )
 
@@ -68,8 +67,7 @@ func buildCatalog(ctx context.Context, specFileName, outputFile string) error {
 	rootDir := filepath.Dir(specFileName)
 
 	var (
-		fbcFsys     fs.FS
-		fbcCacheDir string
+		fbcFsys fs.FS
 	)
 	switch spec.Source.SourceType {
 	case specsv1.CatalogSpecSourceTypeFBC:
@@ -81,12 +79,6 @@ func buildCatalog(ctx context.Context, specFileName, outputFile string) error {
 		if _, err := declcfg.ConvertToModel(*fbc); err != nil {
 			return fmt.Errorf("failed to validate catalog: %v", err)
 		}
-
-		fbcCacheDir, err = buildCache(ctx, fbcFsys, spec.Source.FBC.CacheFormat)
-		if err != nil {
-			return fmt.Errorf("failed to build cache: %v", err)
-		}
-		defer os.RemoveAll(fbcCacheDir)
 	case specsv1.CatalogSpecSourceTypeFBCTemplate:
 		templateSchema, templateData, err := getTemplateData(rootDir, spec.Source.FBCTemplate.TemplateFile)
 		if err != nil {
@@ -98,11 +90,6 @@ func buildCatalog(ctx context.Context, specFileName, outputFile string) error {
 		}
 		defer os.RemoveAll(templateOutputTmpDir)
 		fbcFsys = os.DirFS(templateOutputTmpDir)
-		fbcCacheDir, err = buildCache(ctx, fbcFsys, spec.Source.FBCTemplate.CacheFormat)
-		if err != nil {
-			return fmt.Errorf("failed to build cache: %v", err)
-		}
-		defer os.RemoveAll(fbcCacheDir)
 	default:
 		return fmt.Errorf("unsupported source type %q", spec.Source.SourceType)
 	}
@@ -115,13 +102,8 @@ func buildCatalog(ctx context.Context, specFileName, outputFile string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create configs fs: %v", err)
 	}
-	cacheFsys, err := fsutil.Prefix(os.DirFS(fbcCacheDir), "/tmp/cache")
-	if err != nil {
-		return fmt.Errorf("failed to create cache fs: %v", err)
-	}
 	layers := []fs.FS{
 		configsFsys,
-		cacheFsys,
 	}
 
 	// Open output file for writing
@@ -247,24 +229,4 @@ func renderTemplate(ctx context.Context, templateSchema string, templateData []b
 		return "", fmt.Errorf("failed to write rendered template to fs: %w", err)
 	}
 	return templateOutputTmpDir, nil
-}
-
-func buildCache(ctx context.Context, fbcFsys fs.FS, backendName string) (string, error) {
-	tmpCacheDir, err := os.MkdirTemp("", "kpm-build-catalog-cache")
-	if err != nil {
-		return "", fmt.Errorf("failed to create cache dir: %v", err)
-	}
-
-	fbcCache, err := cache.New(tmpCacheDir, cache.WithBackendName(backendName))
-	if err != nil {
-		return "", fmt.Errorf("failed to create cache: %v", err)
-	}
-
-	if err := fbcCache.Build(ctx, fbcFsys); err != nil {
-		return "", fmt.Errorf("failed to build cache: %w", err)
-	}
-	if err := fbcCache.Close(); err != nil {
-		return "", fmt.Errorf("failed to close cache: %w", err)
-	}
-	return tmpCacheDir, nil
 }
