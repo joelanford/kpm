@@ -8,8 +8,8 @@ import (
 	"text/template"
 
 	"github.com/containers/image/v5/docker/reference"
-
 	"github.com/joelanford/kpm/internal/kpm"
+
 	"github.com/operator-framework/operator-registry/alpha/action"
 	"github.com/operator-framework/operator-registry/alpha/action/migrations"
 	"github.com/operator-framework/operator-registry/alpha/declcfg"
@@ -17,7 +17,8 @@ import (
 )
 
 type Render struct {
-	Migrations *migrations.Migrations
+	Migrations     *migrations.Migrations
+	AllowedRefMask action.RefType
 }
 
 func (r *Render) Render(ctx context.Context, ref string) (*declcfg.DeclarativeConfig, error) {
@@ -25,8 +26,9 @@ func (r *Render) Render(ctx context.Context, ref string) (*declcfg.DeclarativeCo
 		return r.renderKpm(ctx, ref)
 	}
 	stdRender := action.Render{
-		Refs:       []string{ref},
-		Migrations: r.Migrations,
+		Refs:           []string{ref},
+		Migrations:     r.Migrations,
+		AllowedRefMask: r.AllowedRefMask,
 	}
 	return stdRender.Run(ctx)
 }
@@ -54,7 +56,7 @@ func (r *Render) renderKpm(ctx context.Context, kpmPath string) (*declcfg.Declar
 	refTmpl := template.Must(template.New("image").Parse(canonicalRef.String()))
 	stdRender := action.Render{
 		Refs:             []string{kpmContentRoot},
-		AllowedRefMask:   action.RefBundleDir | action.RefDCDir,
+		AllowedRefMask:   r.AllowedRefMask & (action.RefBundleDir | action.RefDCDir),
 		ImageRefTemplate: refTmpl,
 		Migrations:       r.Migrations,
 	}

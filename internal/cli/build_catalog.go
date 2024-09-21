@@ -3,13 +3,16 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
+	"github.com/blang/semver/v4"
 	"github.com/containers/image/v5/docker/reference"
 	"github.com/joelanford/kpm/internal/action"
 	specsv1 "github.com/joelanford/kpm/internal/api/specs/v1"
@@ -17,12 +20,15 @@ import (
 	"github.com/joelanford/kpm/internal/kpm"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
+	"golang.org/x/exp/maps"
 	"sigs.k8s.io/yaml"
 
+	stdaction "github.com/operator-framework/operator-registry/alpha/action"
 	"github.com/operator-framework/operator-registry/alpha/action/migrations"
 	"github.com/operator-framework/operator-registry/alpha/declcfg"
+	"github.com/operator-framework/operator-registry/alpha/property"
 	"github.com/operator-framework/operator-registry/alpha/template/basic"
-	"github.com/operator-framework/operator-registry/alpha/template/semver"
+	semvertemplate "github.com/operator-framework/operator-registry/alpha/template/semver"
 	"github.com/operator-framework/operator-registry/pkg/containertools"
 )
 
@@ -31,17 +37,85 @@ func BuildCatalog() *cobra.Command {
 		outputFile string
 	)
 	cmd := &cobra.Command{
-		Use:   "catalog <catalogSpecFile>",
+		Use:   "catalog <catalogSpecFile> | <bundleRoot> <tagRef>",
 		Short: "Build a catalog",
-		Long: `Build a kpm catalog from the specified catalog directory.
+		Long: `Build a kpm catalog from a spec file or a directory of bundles.
+
+USING A DIRECTORY OF BUNDLES
+
+  Usage: kpm build catalog <bundleRoot> <tagRef>
+
+  The simplest way to build a catalog is to provide a directory of bundles and a
+  tag reference for the catalog. The tag should be a fully qualified image reference.
+  In this mode, kpm will automatically generate a catalog from the bundles in the
+  specified directory where newer versions of a bundle can upgrade from all previous
+  versions.
+
+  Most users should use this mode to build catalogs.
+
+USING A SPEC FILE
+
+  Usage: kpm build catalog <catalogSpecFile>
+
+  When more configuration is needed to build a catalog, a spec file can be used. 
+  kpm supports building catalogs using OLM's FBC and FBC template formats. With a
+  spec file, users are exposed to more advanced features like template rendering and
+  raw FBC.
+
+  This mode is NOT RECOMMENDED for most users. It is intended for advanced users who
+  are migrating their existing OLMv0 catalogs to kpm or who nned more control over
+  the catalog generation process.
+
+  
+  EXAMPLE: spec file to build a catalog from raw FBC
+
+    The FBC format is a directory of declarative config files. To build a catalog from
+    an existing FBC directory, use a spec file like this:
+  
+      apiVersion: specs.kpm.io/v1
+      kind: Catalog
+      tag: "quay.io/myorg/my-catalog:latest"
+      source:
+        sourceType: fbc
+        fbc:
+          catalogRoot: ./path/to/fbc/root/
+
+  EXAMPLE: spec file to build a catalog from a template
+
+    The FBC template format is a single file that contains a template specification
+    for generating FBC. kpm supports OLM's semver and basic templates. To build a
+    catalog from an FBC template, use a spec file like this:
+
+      apiVersion: specs.kpm.io/v1
+      kind: Catalog
+      tag: "quay.io/myorg/my-catalog:latest"
+      source:
+        sourceType: fbcTemplate
+        fbcTemplate:
+          templateFile: semver.yaml
 `,
-		Args: cobra.ExactArgs(1),
+		Args: cobra.RangeArgs(1, 2),
 		Run: func(cmd *cobra.Command, args []string) {
 			ctx := cmd.Context()
-			specFileName := args[0]
-			if err := buildCatalog(ctx, specFileName, outputFile); err != nil {
-				cmd.PrintErrf("failed to build catalog: %v\n", err)
-				os.Exit(1)
+
+			switch len(args) {
+			case 1:
+				specFileName := args[0]
+				if err := buildCatalogFromSpec(ctx, specFileName, outputFile); err != nil {
+					cmd.PrintErrf("failed to build catalog: %v\n", err)
+					os.Exit(1)
+				}
+			case 2:
+				bundleRoot := args[0]
+				tagRef, err := getCatalogRef(args[1])
+				if err != nil {
+					cmd.PrintErrf("failed to get tag ref: %v\n", err)
+					os.Exit(1)
+				}
+				if err := buildCatalogFromBundles(ctx, bundleRoot, tagRef, outputFile); err != nil {
+					cmd.PrintErrf("failed to build catalog: %v\n", err)
+					os.Exit(1)
+				}
 			}
 		},
 	}
@@ -50,10 +124,125 @@ func BuildCatalog() *cobra.Command {
 	return cmd
 }
 
-// buildCatalog reads a spec file, builds a kpm catalog from the spec, and writes it to an output file.
+// buildCatalogFromBundles reads bundle files recursively from a directory, generates a catalog, and writes it to an output file.
 //
 // TODO: Move this logic outside the CLI package to make it easier to test and more reusable.
-func buildCatalog(ctx context.Context, specFileName, outputFile string) error {
+func buildCatalogFromBundles(ctx context.Context, bundleRoot string, tagRef reference.NamedTagged, outputFile string) error {
+	tmpCatalogDir, err := os.MkdirTemp("", "kpm-tmp-fbc-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary catalog file: %w", err)
+	}
+	defer os.Remove(tmpCatalogDir)
+
+	tmpCatalogFile, err := os.Create(filepath.Join(tmpCatalogDir, "catalog.yaml"))
+	if err != nil {
+		return fmt.Errorf("failed to create temporary catalog file: %w", err)
+	}
+	defer tmpCatalogFile.Close()
+
+	type bundleMeta struct {
+		name    string
+		version semver.Version
+	}
+	parseVersion := func(b *declcfg.Bundle) (semver.Version, error) {
+		for _, p := range b.Properties {
+			if p.Type != property.TypePackage {
+				continue
+			}
+			var pkg property.Package
+			if err := json.Unmarshal(p.Value, &pkg); err != nil {
+				return semver.Version{}, err
+			}
+			return semver.Parse(pkg.Version)
+		}
+		return semver.Version{}, fmt.Errorf("no package property found")
+	}
+	bundles := map[string][]bundleMeta{}
+	if err := filepath.WalkDir(bundleRoot, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return fmt.Errorf("failed to walk directory: %w", err)
+		}
+		if d.IsDir() {
+			return nil
+		}
+
+		// Skip non-bundle files
+		if !strings.HasSuffix(path, ".bundle.kpm") {
+			return nil
+		}
+
+		m, _ := migrations.NewMigrations(migrations.AllMigrations)
+		logrus.SetOutput(io.Discard)
+		r := action.Render{
+			Migrations:     m,
+			AllowedRefMask: stdaction.RefBundleDir,
+		}
+		fbc, err := r.Render(ctx, path)
+		if err != nil {
+			return fmt.Errorf("failed to render bundle %q: %w", path, err)
+		}
+		vers, err := parseVersion(&fbc.Bundles[0])
+		if err != nil {
+			return fmt.Errorf("failed to parse bundle version: %w", err)
+		}
+		bundles[fbc.Bundles[0].Package] = append(bundles[fbc.Bundles[0].Package], bundleMeta{
+			name:    fbc.Bundles[0].Name,
+			version: vers,
+		})
+		if err := declcfg.WriteYAML(*fbc, tmpCatalogFile); err != nil {
+			return fmt.Errorf("failed to write bundle to catalog: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	pkgNames := maps.Keys(bundles)
+	slices.Sort(pkgNames)
+
+	for _, pkgName := range pkgNames {
+		metas := bundles[pkgName]
+		slices.SortFunc(metas, func(i, j bundleMeta) int {
+			return j.version.Compare(i.version)
+		})
+		fbcPkg := declcfg.Package{
+			Schema:         declcfg.SchemaPackage,
+			Name:           pkgName,
+			DefaultChannel: "default",
+			// TODO: fill in icon from latest version
+			Icon: nil,
+		}
+		fbcCh := declcfg.Channel{
+			Schema:  declcfg.SchemaChannel,
+			Package: pkgName,
+			Name:    "default",
+			Entries: make([]declcfg.ChannelEntry, len(metas)),
+		}
+		for i, meta := range metas {
+			entry := declcfg.ChannelEntry{
+				Name:      meta.name,
+				SkipRange: fmt.Sprintf("<%s", meta.version.String()),
+			}
+			if i < len(metas)-1 {
+				entry.Replaces = metas[i+1].name
+			}
+			fbcCh.Entries[i] = entry
+		}
+		fbc := declcfg.DeclarativeConfig{
+			Packages: []declcfg.Package{fbcPkg},
+			Channels: []declcfg.Channel{fbcCh},
+		}
+		if err := declcfg.WriteYAML(fbc, tmpCatalogFile); err != nil {
+			return fmt.Errorf("failed to write package to catalog: %w", err)
+		}
+	}
+	return writeCatalogFsys(os.DirFS(tmpCatalogDir), tagRef, outputFile)
+}
+
+// buildCatalogFromSpec reads a spec file, builds a kpm catalog from the spec, and writes it to an output file.
+//
+// TODO: Move this logic outside the CLI package to make it easier to test and more reusable.
+func buildCatalogFromSpec(ctx context.Context, specFileName, outputFile string) error {
 	spec, err := readCatalogSpec(specFileName)
 	if err != nil {
 		return fmt.Errorf("failed to read spec file: %w", err)
@@ -93,7 +282,10 @@ func buildCatalog(ctx context.Context, specFileName, outputFile string) error {
 	default:
 		return fmt.Errorf("unsupported source type %q", spec.Source.SourceType)
 	}
+	return writeCatalogFsys(fbcFsys, tagRef, outputFile)
+}
 
+func writeCatalogFsys(fbcFsys fs.FS, tagRef reference.NamedTagged, outputFile string) error {
 	annotations := map[string]string{
 		containertools.ConfigsLocationLabel: "/configs",
 	}
@@ -210,7 +402,7 @@ func renderTemplate(ctx context.Context, templateSchema string, templateData []b
 		}
 		fbc, err = basicTemplate.Render(ctx, bytes.NewReader(templateData))
 	case "olm.semver":
-		semverTemplate := semver.Template{
+		semverTemplate := semvertemplate.Template{
 			Data:         bytes.NewReader(templateData),
 			RenderBundle: renderBundle,
 		}
