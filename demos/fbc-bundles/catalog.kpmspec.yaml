@@ -1,0 +1,11 @@
+apiVersion: specs.kpm.io/v1
+kind: Catalog
+
+tag: "quay.io/joelanford/kpm-example-catalog:bundles"
+cacheFormat: none
+migrationLevel: all
+
+source:
+  sourceType: bundles
+  bundles:
+    bundleRoot: ../bundles

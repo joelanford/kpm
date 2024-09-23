@@ -1,8 +1,9 @@
 apiVersion: specs.kpm.io/v1
 kind: Catalog
+
 tag: "quay.io/joelanford/kpm-example-catalog:fbc"
+
 source:
   sourceType: fbc
   fbc:
     catalogRoot: catalog
-    cacheFormat: json

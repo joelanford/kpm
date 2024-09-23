@@ -5,6 +5,7 @@ import (
 )
 
 const (
+	CatalogSpecSourceTypeBundles     = "bundles"
 	CatalogSpecSourceTypeFBC         = "fbc"
 	CatalogSpecSourceTypeFBCTemplate = "fbcTemplate"
 
@@ -15,14 +16,21 @@ type Catalog struct {
 	metav1.TypeMeta `json:",inline"`
 
 	Tag              string            `json:"tag"`
+	MigrationLevel   string            `json:"migrationLevel,omitempty"`
+	CacheFormat      string            `json:"cacheFormat,omitempty"`
 	Source           CatalogSpecSource `json:"source"`
 	ExtraAnnotations map[string]string `json:"extraAnnotations,omitempty"`
 }
 
 type CatalogSpecSource struct {
 	SourceType  string             `json:"sourceType"`
+	Bundles     *BundleSource      `json:"bundles,omitempty"`
 	FBC         *FBCSource         `json:"fbc,omitempty"`
 	FBCTemplate *FBCTemplateSource `json:"fbcTemplate,omitempty"`
+}
+
+type BundleSource struct {
+	BundleRoot string `json:"bundleRoot"`
 }
 
 type FBCSource struct {
@@ -30,6 +38,5 @@ type FBCSource struct {
 }
 
 type FBCTemplateSource struct {
-	TemplateFile   string `json:"templateFile"`
-	MigrationLevel string `json:"migrationLevel,omitempty"`
+	TemplateFile string `json:"templateFile"`
 }

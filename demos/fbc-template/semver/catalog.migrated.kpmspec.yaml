@@ -1,9 +1,11 @@
 apiVersion: specs.kpm.io/v1
 kind: Catalog
+
 tag: "quay.io/joelanford/kpm-demo-catalog:semver-migrated"
+migrationLevel: all
+cacheFormat: pogreb.v1
+
 source:
   sourceType: fbcTemplate
   fbcTemplate:
     templateFile: semver.yaml
-    migrationLevel: bundle-object-to-csv-metadata
-    fbcCacheFormat: pogreb.v1
