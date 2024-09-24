@@ -31,6 +31,28 @@ go install github.com/joelanford/kpm@latest
    pushed "my-olm-package-v0.0.1.bundle.kpm" to "quay.io/joelanford/my-olm-package-bundle:v0.0.1" (digest: sha256:fe54318b20e00a37337058b569490e2e2df29fbaaf1af4761a11929e6d364ace)
    ```
 
+2. Build a catalog from a directory of KPM bundle files and push it to an image registry
+
+   ```
+   $ cat << EOF > catalog.kpmspec.yaml
+   apiVersion: specs.kpm.io/v1
+   kind: Catalog
+   tag: "quay.io/joelanford/kpm-example-catalog:bundles"
+   cacheFormat: none
+   migrationLevel: all
+   source:
+      sourceType: bundles
+      bundles:
+        bundleRoot: ./bundles/
+   EOF
+   
+   $ kpm build catalog catalog.kpmspec.yaml
+   Catalog written to kpm-example-catalog-bundles.catalog.kpm with tag "quay.io/joelanford/kpm-example-catalog:bundles" (digest: sha256:96d2c28388eeb762d76211d509c1151491f290a709b92d0ba8180ff2638adcee)
+   
+   $ kpm push kpm-example-catalog-bundles.catalog.kpm
+   pushed "kpm-example-catalog-bundles.catalog.kpm" to "quay.io/joelanford/kpm-example-catalog:bundles" (digest: sha256:96d2c28388eeb762d76211d509c1151491f290a709b92d0ba8180ff2638adcee)
+   ```
+
 2. Build a catalog from an existing FBC and push it to an image registry
 
    ```
@@ -38,11 +60,11 @@ go install github.com/joelanford/kpm@latest
    apiVersion: specs.kpm.io/v1
    kind: Catalog
    tag: "quay.io/joelanford/kpm-example-catalog:fbc"
+   cacheFormat: json
    source:
      sourceType: fbc
      fbc:
        catalogRoot: ./catalog/
-       cacheFormat: json
    EOF
 
    $ kpm build catalog catalog.kpmspec.yaml
@@ -71,12 +93,12 @@ go install github.com/joelanford/kpm@latest
    apiVersion: specs.kpm.io/v1
    kind: Catalog
    tag: "quay.io/joelanford/kpm-demo-catalog:semver-migrated"
+   migrationLevel: bundle-object-to-csv-metadata
+   cacheFormat: pogreb.v1
    source:
      sourceType: fbcTemplate
      fbcTemplate:
        templateFile: semver.yaml
-       migrationLevel: bundle-object-to-csv-metadata
-       fbcCacheFormat: pogreb.v1
    EOF
 
    $ kpm build catalog catalog.kpmspec.yaml
@@ -96,4 +118,3 @@ go install github.com/joelanford/kpm@latest
    image: quay.io/joelanford/my-olm-package-bundle:v0.0.1
    ...
    ```
-
