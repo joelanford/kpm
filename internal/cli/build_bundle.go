@@ -49,6 +49,9 @@ func buildBundle(specFileName, outputFile string) error {
 	// Load the bundle
 	wd := filepath.Dir(specFileName)
 	bundleDir := filepath.Join(wd, spec.BundleRoot)
+	if filepath.IsAbs(spec.BundleRoot) {
+		bundleDir = spec.BundleRoot
+	}
 	b, err := bundle.NewRegistry(os.DirFS(bundleDir))
 	if err != nil {
 		return fmt.Errorf("failed to load registry bundle: %v", err)
