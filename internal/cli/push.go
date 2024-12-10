@@ -3,9 +3,10 @@ package cli
 import (
 	"os"
 
-	"github.com/joelanford/kpm/internal/kpm"
 	"github.com/spf13/cobra"
 	"oras.land/oras-go/v2"
+
+	"github.com/joelanford/kpm/internal/kpm"
 )
 
 func Push() *cobra.Command {

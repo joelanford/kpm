@@ -13,15 +13,17 @@ import (
 	"os"
 
 	"github.com/containers/image/v5/docker/reference"
-	"github.com/joelanford/kpm/internal/tar"
 	"github.com/opencontainers/go-digest"
+	"github.com/opencontainers/image-spec/specs-go"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/registry"
-	"oras.land/oras-go/pkg/content"
 	"oras.land/oras-go/v2"
+	"oras.land/oras-go/v2/content"
 	"oras.land/oras-go/v2/content/oci"
+
+	"github.com/joelanford/kpm/internal/tar"
 )
 
 func WriteImageManifest(w io.Writer, name reference.NamedTagged, layers []fs.FS, labels map[string]string) (ocispec.Descriptor, error) {
@@ -47,7 +49,7 @@ func WriteImageManifest(w io.Writer, name reference.NamedTagged, layers []fs.FS,
 		if err != nil {
 			return ocispec.Descriptor{}, fmt.Errorf("failed to build layer[%d]: %w", i, err)
 		}
-		if err := kpmStore.Push(context.Background(), l.descriptor, bytes.NewReader(l.data)); err != nil {
+		if err := pushIfNotExists(context.Background(), kpmStore, l.descriptor, bytes.NewReader(l.data)); err != nil {
 			return ocispec.Descriptor{}, fmt.Errorf("failed to push layer data: %w", err)
 		}
 
@@ -76,18 +78,18 @@ func WriteImageManifest(w io.Writer, name reference.NamedTagged, layers []fs.FS,
 		Digest:    digest.FromBytes(configData),
 		Size:      int64(len(configData)),
 	}
-	if err := kpmStore.Push(context.Background(), configDesc, bytes.NewReader(configData)); err != nil {
+	if err := pushIfNotExists(context.Background(), kpmStore, configDesc, bytes.NewReader(configData)); err != nil {
 		return ocispec.Descriptor{}, fmt.Errorf("failed to push config data: %w", err)
 	}
 
 	annotations := maps.Clone(labels)
 	annotations[ocispec.AnnotationRefName] = name.String()
 
-	manifestData, manifestDesc, err := content.GenerateManifest(&configDesc, annotations, layerDescs...)
+	manifestDesc, manifestData, err := generateManifest(configDesc, annotations, layerDescs...)
 	if err != nil {
 		return ocispec.Descriptor{}, fmt.Errorf("failed to generate manifest data: %w", err)
 	}
-	if err := kpmStore.Push(context.Background(), manifestDesc, bytes.NewReader(manifestData)); err != nil {
+	if err := pushIfNotExists(context.Background(), kpmStore, manifestDesc, bytes.NewReader(manifestData)); err != nil {
 		return ocispec.Descriptor{}, fmt.Errorf("failed to push manifest data: %w", err)
 	}
 
@@ -168,7 +170,7 @@ func WriteHelmChartManifest(w io.Writer, name reference.NamedTagged, chartRoot f
 	if err != nil {
 		return ocispec.Descriptor{}, fmt.Errorf("failed to build chart layer: %w", err)
 	}
-	if err := kpmStore.Push(context.Background(), chartLayer.descriptor, bytes.NewReader(chartLayer.data)); err != nil {
+	if err := pushIfNotExists(context.Background(), kpmStore, chartLayer.descriptor, bytes.NewReader(chartLayer.data)); err != nil {
 		return ocispec.Descriptor{}, fmt.Errorf("failed to push chart layer: %w", err)
 	}
 
@@ -194,11 +196,11 @@ func WriteHelmChartManifest(w io.Writer, name reference.NamedTagged, chartRoot f
 	annotations := maps.Clone(labels)
 	annotations[ocispec.AnnotationRefName] = name.String()
 
-	manifestData, manifestDesc, err := content.GenerateManifest(&configDesc, annotations, layerDescs...)
+	manifestDesc, manifestData, err := generateManifest(configDesc, annotations, layerDescs...)
 	if err != nil {
 		return ocispec.Descriptor{}, fmt.Errorf("failed to generate manifest data: %w", err)
 	}
-	if err := kpmStore.Push(context.Background(), manifestDesc, bytes.NewReader(manifestData)); err != nil {
+	if err := pushIfNotExists(context.Background(), kpmStore, manifestDesc, bytes.NewReader(manifestData)); err != nil {
 		return ocispec.Descriptor{}, fmt.Errorf("failed to push manifest data: %w", err)
 	}
 
@@ -227,4 +229,36 @@ func loadHelmChartFS(chartRoot fs.FS) (*chart.Chart, error) {
 		return nil, fmt.Errorf("failed to validate chart: %w", err)
 	}
 	return ch, nil
+}
+
+func generateManifest(config ocispec.Descriptor, annotations map[string]string, layers ...ocispec.Descriptor) (ocispec.Descriptor, []byte, error) {
+	manifest := ocispec.Manifest{
+		Versioned:   specs.Versioned{SchemaVersion: 2},
+		MediaType:   ocispec.MediaTypeImageManifest,
+		Annotations: annotations,
+		Config:      config,
+		Layers:      layers,
+	}
+
+	manifestJSON, err := json.Marshal(manifest)
+	if err != nil {
+		return ocispec.Descriptor{}, nil, fmt.Errorf("failed to marshal manifest: %w", err)
+	}
+	manifestDesc := content.NewDescriptorFromBytes(manifest.MediaType, manifestJSON)
+	// populate Annotations of the manifest into manifestDesc
+	manifestDesc.Annotations = annotations
+	return manifestDesc, manifestJSON, nil
+}
+
+func pushIfNotExists(ctx context.Context, pusher content.Pusher, desc ocispec.Descriptor, r io.Reader) error {
+	if ros, ok := pusher.(content.ReadOnlyStorage); ok {
+		exists, err := ros.Exists(ctx, desc)
+		if err != nil {
+			return fmt.Errorf("failed to check existence: %s: %s: %w", desc.Digest.String(), desc.MediaType, err)
+		}
+		if exists {
+			return nil
+		}
+	}
+	return pusher.Push(ctx, desc, r)
 }
