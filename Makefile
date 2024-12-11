@@ -1,6 +1,6 @@
 .PHONY: install
 install:
-	go install .
+	CGO_ENABLED=1 go install .
 
 .PHONY: build
 build:

@@ -1,0 +1,12 @@
+apiVersion: specs.kpm.io/v1
+kind: Catalog
+
+tag: "quay.io/joelanford/argocd-operator-catalog:latest"
+cacheFormat: none
+migrationLevel: all
+
+source:
+  sourceType: legacy
+  legacy:
+    bundleRoot: .
+    bundleRegistryNamespace: "quay.io/joelanford"

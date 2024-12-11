@@ -8,6 +8,7 @@ const (
 	CatalogSpecSourceTypeBundles     = "bundles"
 	CatalogSpecSourceTypeFBC         = "fbc"
 	CatalogSpecSourceTypeFBCTemplate = "fbcTemplate"
+	CatalogSpecSourceTypeLegacy      = "legacy"
 
 	KindCatalog = "Catalog"
 )
@@ -27,6 +28,7 @@ type CatalogSpecSource struct {
 	Bundles     *BundleSource      `json:"bundles,omitempty"`
 	FBC         *FBCSource         `json:"fbc,omitempty"`
 	FBCTemplate *FBCTemplateSource `json:"fbcTemplate,omitempty"`
+	Legacy      *LegacySource      `json:"legacy,omitempty"`
 }
 
 type BundleSource struct {
@@ -39,4 +41,9 @@ type FBCSource struct {
 
 type FBCTemplateSource struct {
 	TemplateFile string `json:"templateFile"`
+}
+
+type LegacySource struct {
+	BundleRoot              string `json:"bundleRoot"`
+	BundleRegistryNamespace string `json:"bundleRegistryNamespace"`
 }

@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -15,18 +16,14 @@ import (
 
 	"github.com/blang/semver/v4"
 	"github.com/containers/image/v5/docker/reference"
-	"github.com/joelanford/kpm/internal/action"
-	specsv1 "github.com/joelanford/kpm/internal/api/specs/v1"
-	"github.com/joelanford/kpm/internal/fsutil"
-	"github.com/joelanford/kpm/internal/kpm"
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"golang.org/x/exp/maps"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/yaml"
 
 	"github.com/operator-framework/api/pkg/operators/v1alpha1"
-
-	stdaction "github.com/operator-framework/operator-registry/alpha/action"
 	"github.com/operator-framework/operator-registry/alpha/action/migrations"
 	"github.com/operator-framework/operator-registry/alpha/declcfg"
 	"github.com/operator-framework/operator-registry/alpha/property"
@@ -34,14 +31,23 @@ import (
 	semvertemplate "github.com/operator-framework/operator-registry/alpha/template/semver"
 	"github.com/operator-framework/operator-registry/pkg/cache"
 	"github.com/operator-framework/operator-registry/pkg/containertools"
+	"github.com/operator-framework/operator-registry/pkg/image"
+	"github.com/operator-framework/operator-registry/pkg/registry"
+	"github.com/operator-framework/operator-registry/pkg/sqlite"
+
+	"github.com/joelanford/kpm/internal/action"
+	specsv1 "github.com/joelanford/kpm/internal/api/specs/v1"
+	"github.com/joelanford/kpm/internal/bundle"
+	"github.com/joelanford/kpm/internal/fsutil"
+	"github.com/joelanford/kpm/internal/kpm"
 )
 
 func BuildCatalog() *cobra.Command {
 	var (
-		outputFile string
+		outputDirectory string
 	)
 	cmd := &cobra.Command{
-		Use:   "catalog <catalogSpecFile> | <bundleRoot> <tagRef>",
+		Use:   "catalog <catalogSpecFile>",
 		Short: "Build a catalog",
 		Long: `Build a kpm catalog from a spec file or a directory of bundles.
 
@@ -122,27 +128,48 @@ catalogs.specs.kpm.io/v1
 		sourceType: fbcTemplate
 		fbcTemplate:
 		  templateFile: semver.yaml
+
+    legacy (deprecated)
+
+    !!! No new packages should begin using this format !!!
+
+    The legacy format uses the deprecated sqlite-based catalog building techniques that
+    are based on each bundle's upgrade graph and channel membership metadata. This format
+    is highly discouraged because it does not support commonly used features like
+    retroactive changes to channel membership and channel-specific upgrade edges.
+
+	To use this source type, create a spec file like this:
+
+      apiVersion: specs.kpm.io/v1
+      kind: Catalog
+      tag: "quay.io/myorg/my-catalog:latest"
+      cacheFormat: none
+      source:
+        sourceType: legacy
+        legacy:
+          bundleRoot: ./path/to/legacy/packagemanifests/root
+          bundleRegistryNamespace: quay.io/myorg
 `,
 		Args: cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			ctx := cmd.Context()
 
 			specFileName := args[0]
-			if err := buildCatalogFromSpec(ctx, specFileName, outputFile); err != nil {
+			if err := buildCatalogFromSpec(ctx, specFileName, outputDirectory); err != nil {
 				cmd.PrintErrf("failed to build catalog: %v\n", err)
 				os.Exit(1)
 			}
 		},
 	}
-	cmd.Flags().StringVarP(&outputFile, "output", "o", "",
-		"Output file (default: <repoBaseName>-<tag>.kpm)")
+	cmd.Flags().StringVarP(&outputDirectory, "output", "o", "",
+		"Output directory (default: current working directory)")
 	return cmd
 }
 
 // buildCatalogFromSpec reads a spec file, builds a kpm catalog from the spec, and writes it to an output file.
 //
 // TODO: Move this logic outside the CLI package to make it easier to test and more reusable.
-func buildCatalogFromSpec(ctx context.Context, specFileName, outputFile string) error {
+func buildCatalogFromSpec(ctx context.Context, specFileName, outputDirectory string) error {
 	spec, err := readCatalogSpec(specFileName)
 	if err != nil {
 		return fmt.Errorf("failed to read spec file: %w", err)
@@ -175,6 +202,8 @@ func buildCatalogFromSpec(ctx context.Context, specFileName, outputFile string) 
 			return fmt.Errorf("failed to get template data: %v", err)
 		}
 		fbc, err = renderTemplate(ctx, templateSchema, templateData)
+	case specsv1.CatalogSpecSourceTypeLegacy:
+		fbc, err = renderLegacyBundlesDir(ctx, filepath.Join(rootDir, spec.Source.Legacy.BundleRoot), spec.Source.Legacy.BundleRegistryNamespace, outputDirectory)
 	default:
 		return fmt.Errorf("unsupported source type %q", spec.Source.SourceType)
 	}
@@ -206,7 +235,7 @@ func buildCatalogFromSpec(ctx context.Context, specFileName, outputFile string) 
 	case "json", "pogreb.v1":
 		break // all other cases return within the switch
 	case "none":
-		return writeCatalog(fbcFsys, nil, tagRef, outputFile)
+		return writeCatalog(fbcFsys, nil, tagRef, outputDirectory)
 	default:
 		return fmt.Errorf("unsupported cache format %q", spec.CacheFormat)
 	}
@@ -232,10 +261,10 @@ func buildCatalogFromSpec(ctx context.Context, specFileName, outputFile string) 
 		return fmt.Errorf("failed to create cache fs: %v", err)
 	}
 
-	return writeCatalog(fbcFsys, cacheFsys, tagRef, outputFile)
+	return writeCatalog(fbcFsys, cacheFsys, tagRef, outputDirectory)
 }
 
-func writeCatalog(fbcFsys fs.FS, cacheFsys fs.FS, tagRef reference.NamedTagged, outputFile string) error {
+func writeCatalog(fbcFsys fs.FS, cacheFsys fs.FS, tagRef reference.NamedTagged, outputDirectory string) error {
 	annotations := map[string]string{
 		containertools.ConfigsLocationLabel: "/configs",
 	}
@@ -250,11 +279,9 @@ func writeCatalog(fbcFsys fs.FS, cacheFsys fs.FS, tagRef reference.NamedTagged, 
 	}
 
 	// Open output file for writing
-	if outputFile == "" {
-		pathParts := strings.Split(reference.Path(reference.TrimNamed(tagRef)), "/")
-		baseName := pathParts[len(pathParts)-1]
-		outputFile = fmt.Sprintf("%s-%s.catalog.kpm", baseName, tagRef.Tag())
-	}
+	pathParts := strings.Split(reference.Path(reference.TrimNamed(tagRef)), "/")
+	baseName := pathParts[len(pathParts)-1]
+	outputFile := filepath.Join(outputDirectory, fmt.Sprintf("%s-%s.catalog.kpm", baseName, tagRef.Tag()))
 	kpmFile, err := os.Create(outputFile)
 	if err != nil {
 		return fmt.Errorf("failed to create output file: %v", err)
@@ -349,9 +376,7 @@ func renderBundlesDir(ctx context.Context, bundleRoot string) (*declcfg.Declarat
 			return nil
 		}
 
-		r := action.Render{
-			AllowedRefMask: stdaction.RefBundleDir,
-		}
+		r := action.Render{}
 		bundleFBC, err := r.Render(ctx, path)
 		if err != nil {
 			return fmt.Errorf("failed to render bundle %q: %w", path, err)
@@ -442,6 +467,97 @@ func renderBundlesDir(ctx context.Context, bundleRoot string) (*declcfg.Declarat
 	return fbc, nil
 }
 
+func renderLegacyBundlesDir(ctx context.Context, bundleRoot, registryNamespace, outputDirectory string) (*declcfg.DeclarativeConfig, error) {
+	db, err := sql.Open("sqlite3", "file::memory:?mode=memory&cache=shared")
+	if err != nil {
+		return nil, err
+	}
+
+	m, err := sqlite.NewSQLLiteMigrator(db)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.Migrate(ctx); err != nil {
+		return nil, err
+	}
+
+	loader, err := sqlite.NewSQLLiteLoader(db)
+	if err != nil {
+		return nil, err
+	}
+	graphLoader, err := sqlite.NewSQLGraphLoaderFromDB(db)
+	if err != nil {
+		return nil, err
+	}
+
+	updateGraphMode, err := getLegacyUpdateGraphMode(bundleRoot)
+	if err != nil {
+		return nil, err
+	}
+
+	imgDirMap := map[image.Reference]string{}
+	dirEntries, err := os.ReadDir(bundleRoot)
+	if err != nil {
+		return nil, err
+	}
+	for _, dirEntry := range dirEntries {
+		if !dirEntry.IsDir() {
+			continue
+		}
+		bundleDir := filepath.Join(bundleRoot, dirEntry.Name())
+		b, err := bundle.NewRegistry(os.DirFS(bundleDir))
+		if err != nil {
+			return nil, err
+		}
+
+		outputFile := filepath.Join(outputDirectory, fmt.Sprintf("%s-%s.bundle.kpm", b.PackageName(), b.Version()))
+		tagRef, desc, err := bundle.BuildFile(outputFile, b, registryNamespace)
+		if err != nil {
+			return nil, err
+		}
+		digestRef, err := reference.WithDigest(tagRef, desc.Digest)
+		if err != nil {
+			return nil, err
+		}
+		imgDirMap[digestRef] = bundleDir
+	}
+
+	querier := sqlite.NewSQLLiteQuerierFromDb(db)
+	logrus.SetOutput(io.Discard)
+	dp := registry.NewDirectoryPopulator(loader, graphLoader, querier, imgDirMap, nil)
+	if err := dp.Populate(updateGraphMode); err != nil {
+		return nil, err
+	}
+	model, err := sqlite.ToModel(ctx, querier)
+	if err != nil {
+		return nil, err
+	}
+	fbc := declcfg.ConvertFromModel(model)
+	if err := populateDBRelatedImages(ctx, &fbc, db); err != nil {
+		return nil, err
+	}
+
+	return &fbc, err
+}
+
+func getLegacyUpdateGraphMode(bundleRoot string) (registry.Mode, error) {
+	type ciCfg struct {
+		UpdateGraph string `json:"updateGraph"`
+	}
+	var ci ciCfg
+	ciCfgData, err := os.ReadFile(filepath.Join(bundleRoot, "ci.yaml"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return registry.ReplacesMode, nil
+		}
+		return -1, err
+	}
+	if err := yaml.Unmarshal(ciCfgData, &ci); err != nil {
+		return -1, err
+	}
+	return registry.GetModeFromString(strings.TrimSuffix(ci.UpdateGraph, "-mode"))
+}
+
 func getTemplateData(rootDir, templateFile string) (string, []byte, error) {
 	templateData, err := os.ReadFile(filepath.Join(rootDir, templateFile))
 	if err != nil {
@@ -490,4 +606,48 @@ func renderTemplate(ctx context.Context, templateSchema string, templateData []b
 		return semverTemplate.Render(ctx)
 	}
 	return nil, fmt.Errorf("unsupported template schema %q", templateSchema)
+}
+
+func populateDBRelatedImages(ctx context.Context, cfg *declcfg.DeclarativeConfig, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, "SELECT image, operatorbundle_name FROM related_image")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	images := map[string]sets.Set[string]{}
+	for rows.Next() {
+		var (
+			img        sql.NullString
+			bundleName sql.NullString
+		)
+		if err := rows.Scan(&img, &bundleName); err != nil {
+			return err
+		}
+		if !img.Valid || !bundleName.Valid {
+			continue
+		}
+		m, ok := images[bundleName.String]
+		if !ok {
+			m = sets.New[string]()
+		}
+		m.Insert(img.String)
+		images[bundleName.String] = m
+	}
+
+	for i, b := range cfg.Bundles {
+		ris, ok := images[b.Name]
+		if !ok {
+			continue
+		}
+		for _, ri := range b.RelatedImages {
+			if ris.Has(ri.Image) {
+				ris.Delete(ri.Image)
+			}
+		}
+		for ri := range ris {
+			cfg.Bundles[i].RelatedImages = append(cfg.Bundles[i].RelatedImages, declcfg.RelatedImage{Image: ri})
+		}
+	}
+	return nil
 }

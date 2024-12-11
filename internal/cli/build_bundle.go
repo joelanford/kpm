@@ -1,17 +1,16 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 
-	"github.com/containers/image/v5/docker/reference"
-	specsv1 "github.com/joelanford/kpm/internal/api/specs/v1"
-	"github.com/joelanford/kpm/internal/bundle"
-	"github.com/joelanford/kpm/internal/kpm"
 	"github.com/spf13/cobra"
 	"sigs.k8s.io/yaml"
+
+	specsv1 "github.com/joelanford/kpm/internal/api/specs/v1"
+	"github.com/joelanford/kpm/internal/bundle"
 )
 
 func BuildBundle() *cobra.Command {
@@ -57,26 +56,16 @@ func buildBundle(specFileName, outputFile string) error {
 		return fmt.Errorf("failed to load registry bundle: %v", err)
 	}
 
-	tagRef, err := getBundleRef(spec.RegistryNamespace, b)
-	if err != nil {
-		return fmt.Errorf("failed to get tagged reference from spec file: %w", err)
-	}
-
-	// Open output file for writing
 	if outputFile == "" {
-		outputFile = fmt.Sprintf("%s-v%s.bundle.kpm", b.PackageName(), b.Version())
-	}
-	kpmFile, err := os.Create(outputFile)
-	if err != nil {
-		return fmt.Errorf("failed to create output file: %v", err)
+		outputFile = fileForBundle(b)
 	}
 
-	// Write it!
-	desc, err := kpm.WriteImageManifest(kpmFile, tagRef, []fs.FS{b.FS()}, b.Annotations())
+	tagRef, desc, err := bundle.BuildFile(outputFile, b, spec.RegistryNamespace)
 	if err != nil {
-		// Clean up the file if we failed to write it
-		_ = os.Remove(outputFile)
-		return fmt.Errorf("failed to write kpm file: %v", err)
+		return errors.Join(
+			fmt.Errorf("failed to build kpm bundle: %v", err),
+			os.Remove(outputFile),
+		)
 	}
 
 	fmt.Printf("Bundle written to %s with tag %q (digest: %s)\n", outputFile, tagRef, desc.Digest)
@@ -100,13 +89,6 @@ func readBundleSpec(specFile string) (*specsv1.Bundle, error) {
 	return &spec, nil
 }
 
-func getBundleRef(registryNamespace string, b bundle.Bundle) (reference.NamedTagged, error) {
-	repoShortName := fmt.Sprintf("%s-bundle", b.PackageName())
-	repoName := fmt.Sprintf("%s/%s", registryNamespace, repoShortName)
-	nameRef, err := reference.ParseNamed(repoName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse repository name %q: %v", err)
-	}
-	tag := fmt.Sprintf("v%s", b.Version())
-	return reference.WithTag(nameRef, tag)
+func fileForBundle(b bundle.Bundle) string {
+	return fmt.Sprintf("%s-%s.bundle.kpm", b.PackageName(), b.Version())
 }
