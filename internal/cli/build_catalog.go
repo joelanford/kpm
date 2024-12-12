@@ -559,7 +559,10 @@ func getLegacyUpdateGraphMode(bundleRoot string) (registry.Mode, error) {
 }
 
 func getTemplateData(rootDir, templateFile string) (string, []byte, error) {
-	templateData, err := os.ReadFile(filepath.Join(rootDir, templateFile))
+	if !filepath.IsAbs(templateFile) {
+		templateFile = filepath.Join(rootDir, templateFile)
+	}
+	templateData, err := os.ReadFile(templateFile)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to read template file: %v", err)
 	}
