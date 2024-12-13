@@ -1,7 +1,10 @@
 apiVersion: specs.kpm.io/v1
 kind: Catalog
 
-tag: "quay.io/joelanford/kpm-demo-catalog:basic-migrated"
+registryNamespace: quay.io/joelanford
+name: kpm-demo-catalog
+tag: basic-migrated
+
 migrationLevel: bundle-object-to-csv-metadata
 cacheFormat: pogreb.v1
 

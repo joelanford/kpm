@@ -1,0 +1,21 @@
+apiVersion: specs.kpm.io/v1
+kind: Catalog
+
+registryNamespace: quay.io/joelanford
+name: kpm-demo-catalog
+tag: go-template-basic
+
+migrationLevel: bundle-object-to-csv-metadata
+cacheFormat: none
+
+source:
+  sourceType: fbcGoTemplate
+  fbcGoTemplate:
+    bundleSpecGlobs:
+      - "bundles/*/kpmspec.yaml"
+    valuesFiles:
+      - "basic-values.yaml"
+    templateFile: "templates/basic.yaml.tmpl"
+    templateHelperGlobs:
+      - "templates/lib/*"
+

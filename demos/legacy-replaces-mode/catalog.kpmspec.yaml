@@ -1,7 +1,10 @@
 apiVersion: specs.kpm.io/v1
 kind: Catalog
 
-tag: "quay.io/joelanford/argocd-operator-catalog:latest"
+registryNamespace: quay.io/joelanford
+name: argocd-operator-catalog
+tag: latest
+
 cacheFormat: none
 migrationLevel: all
 

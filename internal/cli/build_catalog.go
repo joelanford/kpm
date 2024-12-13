@@ -13,14 +13,12 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"text/template"
 
+	mmsemver "github.com/Masterminds/semver/v3"
 	"github.com/blang/semver/v4"
 	"github.com/containers/image/v5/docker/reference"
-	"github.com/joelanford/kpm/internal/action"
-	specsv1 "github.com/joelanford/kpm/internal/api/specs/v1"
-	"github.com/joelanford/kpm/internal/bundle"
-	"github.com/joelanford/kpm/internal/fsutil"
-	"github.com/joelanford/kpm/internal/kpm"
+	sprig "github.com/go-sprout/sprout/sprigin"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -29,7 +27,6 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/operator-framework/api/pkg/operators/v1alpha1"
-
 	"github.com/operator-framework/operator-registry/alpha/action/migrations"
 	"github.com/operator-framework/operator-registry/alpha/declcfg"
 	"github.com/operator-framework/operator-registry/alpha/property"
@@ -40,6 +37,12 @@ import (
 	"github.com/operator-framework/operator-registry/pkg/image"
 	"github.com/operator-framework/operator-registry/pkg/registry"
 	"github.com/operator-framework/operator-registry/pkg/sqlite"
+
+	"github.com/joelanford/kpm/internal/action"
+	specsv1 "github.com/joelanford/kpm/internal/api/specs/v1"
+	"github.com/joelanford/kpm/internal/bundle"
+	"github.com/joelanford/kpm/internal/fsutil"
+	"github.com/joelanford/kpm/internal/kpm"
 )
 
 func BuildCatalog() *cobra.Command {
@@ -66,68 +69,68 @@ catalogs.specs.kpm.io/v1
 
   Supported migration levels:
     - none [default]
-	- bundle-object-to-csv-metadata
-	- all (currently the same as bundle-object-to-csv-metadata)
+    - bundle-object-to-csv-metadata
+    - all (currently the same as bundle-object-to-csv-metadata)
 
   Supported cache formats:
-	- json [default]
-	- pogreb.v1
-	- none (to exclude the cache from the catalog)
+    - json [default]
+    - pogreb.v1
+    - none (to exclude the cache from the catalog)
 
     NOTE: the pogreb.v1 cache format is not deterministic. Rebuilding a catalog with
     the same content will always produce a different cache layer.
 
   SOURCE TYPES
 
-	bundles
-	
-	The simplest way to build a catalog is to provide a directory of bundles. In this
-	mode, kpm will automatically generate a catalog from the bundles in the specified
-	directory where newer versions of a bundle can upgrade from all previous versions.
-	
-	Most users should use this source type to build catalogs.
-	
-	To use this source type, create a spec file like this:
-	
-	  apiVersion: specs.kpm.io/v1
-	  kind: Catalog
-	  tag: "quay.io/myorg/my-catalog:latest"
+    bundles
+
+    The simplest way to build a catalog is to provide a directory of bundles. In this
+    mode, kpm will automatically generate a catalog from the bundles in the specified
+    directory where newer versions of a bundle can upgrade from all previous versions.
+
+    Most users should use this source type to build catalogs.
+
+    To use this source type, create a spec file like this:
+
+      apiVersion: specs.kpm.io/v1
+      kind: Catalog
+      tag: "quay.io/myorg/my-catalog:latest"
       cacheFormat: none
-	  source:
-		sourceType: bundles
-		bundles:
-		  bundleRoot: ./path/to/dir/containing/kpm/bundles/
-	
-	fbc
-	
-	The FBC format is a directory of declarative config files. To build a catalog from
-	an existing FBC directory, use a spec file like this:
-	
-	  apiVersion: specs.kpm.io/v1
-	  kind: Catalog
-	  tag: "quay.io/myorg/my-catalog:latest"
-	  migrationLevel: bundle-object-to-csv-metadata
-	  cacheFormat: json
-	  source:
-		sourceType: fbc
-		fbc:
-		  catalogRoot: ./path/to/fbc/root/
-	
-	fbcTemplate
-	
-	The FBC template format is a single file that contains a template specification
-	for generating FBC. kpm supports OLM's semver and basic templates. To build a
-	catalog from an FBC template, use a spec file like this:
-	
-	  apiVersion: specs.kpm.io/v1
-	  kind: Catalog
-	  tag: "quay.io/myorg/my-catalog:latest"
-	  migrationLevel: all
-	  cacheFormat: pogreb.v1
-	  source:
-		sourceType: fbcTemplate
-		fbcTemplate:
-		  templateFile: semver.yaml
+      source:
+        sourceType: bundles
+        bundles:
+          bundleRoot: ./path/to/dir/containing/kpm/bundles/
+
+    fbc
+
+    The FBC format is a directory of declarative config files. To build a catalog from
+    an existing FBC directory, use a spec file like this:
+
+      apiVersion: specs.kpm.io/v1
+      kind: Catalog
+      tag: "quay.io/myorg/my-catalog:latest"
+      migrationLevel: bundle-object-to-csv-metadata
+      cacheFormat: json
+      source:
+        sourceType: fbc
+        fbc:
+          catalogRoot: ./path/to/fbc/root/
+
+    fbcTemplate
+
+    The FBC template format is a single file that contains a template specification
+    for generating FBC. kpm supports OLM's semver and basic templates. To build a
+    catalog from an FBC template, use a spec file like this:
+
+      apiVersion: specs.kpm.io/v1
+      kind: Catalog
+      tag: "quay.io/myorg/my-catalog:latest"
+      migrationLevel: all
+      cacheFormat: pogreb.v1
+      source:
+        sourceType: fbcTemplate
+        fbcTemplate:
+          templateFile: semver.yaml
 
     legacy (deprecated)
 
@@ -138,11 +141,14 @@ catalogs.specs.kpm.io/v1
     is highly discouraged because it does not support commonly used features like
     retroactive changes to channel membership and channel-specific upgrade edges.
 
-	To use this source type, create a spec file like this:
+    To use this source type, create a spec file like this:
 
       apiVersion: specs.kpm.io/v1
       kind: Catalog
-      tag: "quay.io/myorg/my-catalog:latest"
+      registryNamespace: quay.io/myorg
+      name: my-catalog
+      tag: latest
+
       cacheFormat: none
       source:
         sourceType: legacy
@@ -170,12 +176,13 @@ catalogs.specs.kpm.io/v1
 //
 // TODO: Move this logic outside the CLI package to make it easier to test and more reusable.
 func buildCatalogFromSpec(ctx context.Context, specFileName, outputDirectory string) error {
+	specFileDir := filepath.Dir(specFileName)
 	spec, err := readCatalogSpec(specFileName)
 	if err != nil {
 		return fmt.Errorf("failed to read spec file: %w", err)
 	}
 
-	tagRef, err := getCatalogRef(spec.Tag)
+	tagRef, err := getCatalogRef(spec.RegistryNamespace, spec.Name, spec.Tag)
 	if err != nil {
 		return fmt.Errorf("failed to get tagged reference from spec file: %w", err)
 	}
@@ -188,27 +195,46 @@ func buildCatalogFromSpec(ctx context.Context, specFileName, outputDirectory str
 		return fmt.Errorf("failed to create migrations: %w", err)
 	}
 
-	rootDir := filepath.Dir(specFileName)
-
 	var fbc *declcfg.DeclarativeConfig
 	switch spec.Source.SourceType {
 	case specsv1.CatalogSpecSourceTypeBundles:
-		fbc, err = renderBundlesDir(ctx, filepath.Join(rootDir, spec.Source.Bundles.BundleRoot))
+		fbc, err = renderBundlesDir(ctx, pathForSpecPath(specFileDir, spec.Source.Bundles.BundleRoot))
 	case specsv1.CatalogSpecSourceTypeFBC:
-		fbc, err = declcfg.LoadFS(ctx, os.DirFS(filepath.Join(rootDir, spec.Source.FBC.CatalogRoot)))
+		fbc, err = declcfg.LoadFS(ctx, os.DirFS(pathForSpecPath(specFileDir, spec.Source.FBC.CatalogRoot)))
 	case specsv1.CatalogSpecSourceTypeFBCTemplate:
-		templateSchema, templateData, err := getTemplateData(rootDir, spec.Source.FBCTemplate.TemplateFile)
+		var (
+			templateSchema string
+			templateData   []byte
+		)
+		templateSchema, templateData, err = getTemplateData(specFileDir, spec.Source.FBCTemplate.TemplateFile)
 		if err != nil {
 			return fmt.Errorf("failed to get template data: %v", err)
 		}
 		fbc, err = renderTemplate(ctx, templateSchema, templateData)
+	case specsv1.CatalogSpecSourceTypeFBCGoTemplate:
+		logrus.SetOutput(io.Discard)
+		bundleSpecGlobs := mapSlice(spec.Source.FBCGoTemplate.BundleSpecGlobs, func(glob string) string {
+			return pathForSpecPath(specFileDir, glob)
+		})
+		templateFile := pathForSpecPath(specFileDir, spec.Source.FBCGoTemplate.TemplateFile)
+		templateHelperGlobs := mapSlice(spec.Source.FBCGoTemplate.TemplateHelperGlobs, func(glob string) string {
+			return pathForSpecPath(specFileDir, glob)
+		})
+		valuesFiles := mapSlice(spec.Source.FBCGoTemplate.ValuesFiles, func(vf string) string {
+			return pathForSpecPath(specFileDir, vf)
+		})
+		fbc, err = renderFBCGoTemplate(ctx, bundleSpecGlobs, templateFile, templateHelperGlobs, valuesFiles, outputDirectory)
 	case specsv1.CatalogSpecSourceTypeLegacy:
-		fbc, err = renderLegacyBundlesDir(ctx, filepath.Join(rootDir, spec.Source.Legacy.BundleRoot), spec.Source.Legacy.BundleRegistryNamespace, outputDirectory)
+		fbc, err = renderLegacyBundlesDir(ctx, pathForSpecPath(specFileDir, spec.Source.Legacy.BundleRoot), spec.Source.Legacy.BundleRegistryNamespace, outputDirectory)
 	default:
 		return fmt.Errorf("unsupported source type %q", spec.Source.SourceType)
 	}
 	if err != nil {
-		return fmt.Errorf("failed to load or generate FBC: %w", err)
+		return fmt.Errorf("failed to render FBC: %w", err)
+	}
+
+	if _, err := declcfg.ConvertToModel(*fbc); err != nil {
+		return fmt.Errorf("failed to validate FBC: %w", err)
 	}
 
 	if err := m.Migrate(fbc); err != nil {
@@ -264,6 +290,14 @@ func buildCatalogFromSpec(ctx context.Context, specFileName, outputDirectory str
 	return writeCatalog(fbcFsys, cacheFsys, tagRef, outputDirectory)
 }
 
+func mapSlice[I, O any](in []I, mapFunc func(I) O) []O {
+	out := make([]O, 0, len(in))
+	for _, i := range in {
+		out = append(out, mapFunc(i))
+	}
+	return out
+}
+
 func writeCatalog(fbcFsys fs.FS, cacheFsys fs.FS, tagRef reference.NamedTagged, outputDirectory string) error {
 	annotations := map[string]string{
 		containertools.ConfigsLocationLabel: "/configs",
@@ -316,14 +350,18 @@ func readCatalogSpec(specFile string) (*specsv1.Catalog, error) {
 	return &spec, nil
 }
 
-func getCatalogRef(refStr string) (reference.NamedTagged, error) {
-	ref, err := reference.ParseNamed(refStr)
+func getCatalogRef(registryNamespace, name, tag string) (reference.NamedTagged, error) {
+	repoName := fmt.Sprintf("%s/%s", registryNamespace, name)
+	ref, err := reference.ParseNamed(repoName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse tag %q from spec file: %v", refStr, err)
+		return nil, fmt.Errorf("failed to parse registry namespace and name from spec: %v", repoName, err)
 	}
-	tagRef, ok := ref.(reference.NamedTagged)
-	if !ok {
-		return reference.WithTag(ref, "latest")
+	if tag == "" {
+		tag = "latest"
+	}
+	tagRef, err := reference.WithTag(ref, tag)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse tag reference: %v", err)
 	}
 	return tagRef, nil
 }
@@ -519,6 +557,8 @@ func renderLegacyBundlesDir(ctx context.Context, bundleRoot, registryNamespace, 
 		if err != nil {
 			return nil, err
 		}
+		fmt.Printf("Bundle written to %s with tag %q (digest: %s)\n", outputFile, tagRef, desc.Digest)
+
 		imgDirMap[digestRef] = bundleDir
 	}
 
@@ -533,6 +573,7 @@ func renderLegacyBundlesDir(ctx context.Context, bundleRoot, registryNamespace, 
 		return nil, err
 	}
 	fbc := declcfg.ConvertFromModel(model)
+
 	if err := populateDBRelatedImages(ctx, &fbc, db); err != nil {
 		return nil, err
 	}
@@ -558,9 +599,9 @@ func getLegacyUpdateGraphMode(bundleRoot string) (registry.Mode, error) {
 	return registry.GetModeFromString(strings.TrimSuffix(ci.UpdateGraph, "-mode"))
 }
 
-func getTemplateData(rootDir, templateFile string) (string, []byte, error) {
+func getTemplateData(specFileDir, templateFile string) (string, []byte, error) {
 	if !filepath.IsAbs(templateFile) {
-		templateFile = filepath.Join(rootDir, templateFile)
+		templateFile = pathForSpecPath(specFileDir, templateFile)
 	}
 	templateData, err := os.ReadFile(templateFile)
 	if err != nil {
@@ -653,4 +694,120 @@ func populateDBRelatedImages(ctx context.Context, cfg *declcfg.DeclarativeConfig
 		}
 	}
 	return nil
+}
+
+func renderFBCGoTemplate(ctx context.Context, bundleSpecGlobs []string, templateFile string, templateHelperGlobs, valuesFiles []string, outputDirectory string) (*declcfg.DeclarativeConfig, error) {
+	var bundleKpmFiles []string
+	for _, bundleSpecGlob := range bundleSpecGlobs {
+		globMatches, err := filepath.Glob(bundleSpecGlob)
+		if err != nil {
+			return nil, err
+		}
+		bundleKpmFiles = append(bundleKpmFiles, globMatches...)
+	}
+
+	bundlesMetas := map[string]declcfg.Meta{}
+	for _, bundleKpmFile := range bundleKpmFiles {
+		outputFile, tagRef, desc, err := bundle.BuildFromSpecFile(bundleKpmFile, bundle.FilenameFromTemplate(filepath.Join(outputDirectory, "{.PackageName}-v{.Version}.bundle.kpm")))
+		if err != nil {
+			return nil, fmt.Errorf("failed to build bundle: %w", err)
+		}
+		fmt.Printf("Bundle written to %s with tag %q (digest: %s)\n", outputFile, tagRef, desc.Digest)
+
+		r := action.Render{}
+		fileFbc, err := r.Render(ctx, outputFile)
+		if err != nil {
+			return nil, err
+		}
+		pr, pw := io.Pipe()
+		go func() {
+			pw.CloseWithError(declcfg.WriteJSON(*fileFbc, pw))
+		}()
+
+		var metas []declcfg.Meta
+		declcfg.WalkMetasReader(pr, func(m *declcfg.Meta, err error) error {
+			if err != nil {
+				return err
+			}
+			metas = append(metas, *m)
+			return nil
+		})
+		if len(metas) != 1 {
+			return nil, fmt.Errorf("expected 1 object that represents a bundle, got %d", len(metas))
+		}
+		bundlesMetas[metas[0].Name] = metas[0]
+	}
+
+	tmpl, err := template.ParseFiles(templateFile)
+	if err != nil {
+		return nil, err
+	}
+	tmplName := tmpl.Templates()[0].Name()
+	tmpl = tmpl.Funcs(sprig.HermeticTxtFuncMap())
+
+	sortSemver := func(in []any) []any {
+		slices.SortFunc(in, func(a, b any) int {
+			aV, bV := a.(*mmsemver.Version), b.(*mmsemver.Version)
+			return aV.Compare(bV)
+		})
+		return in
+	}
+	tmpl = tmpl.Funcs(map[string]any{"sortSemver": sortSemver})
+
+	for _, glob := range templateHelperGlobs {
+		tmpl, err = tmpl.ParseGlob(glob)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	values := map[string]any{}
+	for _, valuesFile := range valuesFiles {
+		vfData, err := os.ReadFile(valuesFile)
+		if err != nil {
+			return nil, err
+		}
+		var m map[string]any
+		if err := yaml.Unmarshal(vfData, &m); err != nil {
+			return nil, err
+		}
+		values = mergeMaps(values, m)
+	}
+
+	data := map[string]any{
+		"Values":  values,
+		"Bundles": bundlesMetas,
+	}
+
+	pr, pw := io.Pipe()
+	go func() {
+		pw.CloseWithError(tmpl.ExecuteTemplate(pw, tmplName, data))
+	}()
+	return declcfg.LoadReader(pr)
+}
+
+func mergeMaps(a, b map[string]any) map[string]any {
+	out := make(map[string]any, len(a))
+	for k, v := range a {
+		out[k] = v
+	}
+	for k, v := range b {
+		if v, ok := v.(map[string]any); ok {
+			if bv, ok := out[k]; ok {
+				if bv, ok := bv.(map[string]any); ok {
+					out[k] = mergeMaps(bv, v)
+					continue
+				}
+			}
+		}
+		out[k] = v
+	}
+	return out
+}
+
+func pathForSpecPath(specFileDir, path string) string {
+	if filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(specFileDir, path)
 }
