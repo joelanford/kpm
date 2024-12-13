@@ -1,7 +1,10 @@
 apiVersion: specs.kpm.io/v1
 kind: Catalog
 
-tag: "quay.io/joelanford/kpm-example-catalog:bundles"
+registryNamespace: quay.io/joelanford
+name: kpm-example-catalog
+tag: bundles
+
 cacheFormat: none
 migrationLevel: all
 

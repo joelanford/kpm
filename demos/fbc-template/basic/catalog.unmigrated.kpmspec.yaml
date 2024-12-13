@@ -1,7 +1,10 @@
 apiVersion: specs.kpm.io/v1
 kind: Catalog
 
-tag: "quay.io/joelanford/kpm-demo-catalog:basic-unmigrated"
+registryNamespace: quay.io/joelanford
+name: kpm-demo-catalog
+tag: basic-unmigrated
+
 cacheFormat: json
 
 source:

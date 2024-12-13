@@ -1,0 +1,38 @@
+{{- define "basic" -}}
+
+{{- $bundleNames := dict -}}
+{{- range .Values.channels -}}
+    {{- range .entries -}}
+        {{- $bundleNames = ($bundleNames | set .name "") -}}
+    {{- end -}}
+{{- end -}}
+---
+schema: olm.package
+name: {{ .Values.package }}
+defaultChannel: {{ .Values.defaultChannel }}
+{{- with .Values.description }}
+description: {{ . }}
+{{- end -}}
+{{- with .Values.icon }}
+icon:
+  base64data: {{ .base64data }}
+  mediatype: {{ .mediatype }}
+{{- end -}}
+
+{{- range .Values.channels }}
+---
+schema: olm.channel
+package: {{ $.Values.package }}
+name: {{ .name }}
+entries:
+{{ .entries | toYaml | indent 2 }}
+{{- end }}
+
+{{- range $bundleName, $bundle := .Bundles }}
+{{- if $bundleNames | hasKey $bundleName }}
+---
+{{ printf "%s" .Blob | fromJson | toYaml }}
+    {{- end -}}
+{{- end }}
+
+{{- end -}}

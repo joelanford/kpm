@@ -1,7 +1,10 @@
 apiVersion: specs.kpm.io/v1
 kind: Catalog
 
-tag: "quay.io/joelanford/kpm-demo-catalog:semver-unmigrated"
+registryNamespace: quay.io/joelanford
+name: kpm-demo-catalog
+tag: semver-unmigrated
+
 cacheFormat: json
 migrationLevel: none
 

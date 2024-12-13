@@ -1,7 +1,9 @@
 apiVersion: specs.kpm.io/v1
 kind: Catalog
 
-tag: "quay.io/joelanford/kpm-example-catalog:fbc"
+registryNamespace: quay.io/joelanford
+name: kpm-example-catalog
+tag: fbc
 
 source:
   sourceType: fbc

@@ -5,10 +5,11 @@ import (
 )
 
 const (
-	CatalogSpecSourceTypeBundles     = "bundles"
-	CatalogSpecSourceTypeFBC         = "fbc"
-	CatalogSpecSourceTypeFBCTemplate = "fbcTemplate"
-	CatalogSpecSourceTypeLegacy      = "legacy"
+	CatalogSpecSourceTypeBundles       = "bundles"
+	CatalogSpecSourceTypeFBC           = "fbc"
+	CatalogSpecSourceTypeFBCTemplate   = "fbcTemplate"
+	CatalogSpecSourceTypeFBCGoTemplate = "fbcGoTemplate"
+	CatalogSpecSourceTypeLegacy        = "legacy"
 
 	KindCatalog = "Catalog"
 )
@@ -16,19 +17,25 @@ const (
 type Catalog struct {
 	metav1.TypeMeta `json:",inline"`
 
-	Tag              string            `json:"tag"`
-	MigrationLevel   string            `json:"migrationLevel,omitempty"`
-	CacheFormat      string            `json:"cacheFormat,omitempty"`
-	Source           CatalogSpecSource `json:"source"`
+	RegistryNamespace string `json:"registryNamespace"`
+	Name              string `json:"name"`
+	Tag               string `json:"tag"`
+
+	MigrationLevel string `json:"migrationLevel,omitempty"`
+	CacheFormat    string `json:"cacheFormat,omitempty"`
+
+	Source CatalogSpecSource `json:"source"`
+
 	ExtraAnnotations map[string]string `json:"extraAnnotations,omitempty"`
 }
 
 type CatalogSpecSource struct {
-	SourceType  string             `json:"sourceType"`
-	Bundles     *BundleSource      `json:"bundles,omitempty"`
-	FBC         *FBCSource         `json:"fbc,omitempty"`
-	FBCTemplate *FBCTemplateSource `json:"fbcTemplate,omitempty"`
-	Legacy      *LegacySource      `json:"legacy,omitempty"`
+	SourceType    string               `json:"sourceType"`
+	Bundles       *BundleSource        `json:"bundles,omitempty"`
+	FBC           *FBCSource           `json:"fbc,omitempty"`
+	FBCTemplate   *FBCTemplateSource   `json:"fbcTemplate,omitempty"`
+	FBCGoTemplate *FBCGoTemplateSource `json:"fbcGoTemplate,omitempty"`
+	Legacy        *LegacySource        `json:"legacy,omitempty"`
 }
 
 type BundleSource struct {
@@ -41,6 +48,13 @@ type FBCSource struct {
 
 type FBCTemplateSource struct {
 	TemplateFile string `json:"templateFile"`
+}
+
+type FBCGoTemplateSource struct {
+	BundleSpecGlobs     []string `json:"bundleSpecGlobs"`
+	ValuesFiles         []string `json:"valuesFiles"`
+	TemplateFile        string   `json:"templateFile"`
+	TemplateHelperGlobs []string `json:"templateHelperGlobs"`
 }
 
 type LegacySource struct {

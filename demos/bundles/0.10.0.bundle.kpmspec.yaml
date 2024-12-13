@@ -1,4 +1,5 @@
 apiVersion: specs.kpm.io/v1
 kind: Bundle
+mediaType: olm.operatorframework.io/registry+v1
 registryNamespace: quay.io/joelanford
 bundleRoot: ./0.10.0/

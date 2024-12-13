@@ -3,9 +3,13 @@ package bundle
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 
 	"github.com/blang/semver/v4"
+	"github.com/containers/image/v5/docker/reference"
+	"github.com/joelanford/kpm/internal/kpm"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/yaml"
 )
@@ -43,6 +47,10 @@ func (b *registry) Version() semver.Version {
 
 func (b *registry) Annotations() map[string]string {
 	return b.annotations
+}
+
+func (b *registry) WriteOCIArchive(w io.Writer, name reference.NamedTagged) (ocispec.Descriptor, error) {
+	return kpm.WriteImageManifest(w, name, []fs.FS{b.root}, b.annotations)
 }
 
 const (

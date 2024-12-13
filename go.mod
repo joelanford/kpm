@@ -1,10 +1,11 @@
 module github.com/joelanford/kpm
 
-go 1.22.5
+go 1.23.3
 
 require (
 	github.com/blang/semver/v4 v4.0.0
 	github.com/containers/image/v5 v5.32.2
+	github.com/go-sprout/sprout v0.6.0
 	github.com/google/go-containerregistry v0.20.0
 	github.com/mattn/go-sqlite3 v1.14.22
 	github.com/opencontainers/go-digest v1.0.0
@@ -23,6 +24,7 @@ require (
 replace github.com/operator-framework/operator-registry => github.com/joelanford/operator-registry v1.19.7-0.20240822182744-040f148380ec
 
 require (
+	dario.cat/mergo v1.0.0 // indirect
 	github.com/AdaLogics/go-fuzz-headers v0.0.0-20230811130428-ced1acdcaa24 // indirect
 	github.com/BurntSushi/toml v1.4.0 // indirect
 	github.com/Masterminds/semver/v3 v3.2.1 // indirect
@@ -89,6 +91,8 @@ require (
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.17.9 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
+	github.com/mitchellh/copystructure v1.2.0 // indirect
+	github.com/mitchellh/reflectwalk v1.0.2 // indirect
 	github.com/moby/locker v1.0.1 // indirect
 	github.com/moby/sys/mountinfo v0.7.2 // indirect
 	github.com/moby/sys/sequential v0.5.0 // indirect
@@ -105,6 +109,7 @@ require (
 	github.com/prometheus/client_model v0.6.1 // indirect
 	github.com/prometheus/common v0.55.0 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect
+	github.com/spf13/cast v1.6.0 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/stoewer/go-strcase v1.3.0 // indirect
 	github.com/stretchr/testify v1.9.0 // indirect
@@ -123,6 +128,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.28.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.3.1 // indirect
 	go.uber.org/atomic v1.9.0 // indirect
+	golang.org/x/crypto v0.26.0 // indirect
 	golang.org/x/net v0.28.0 // indirect
 	golang.org/x/oauth2 v0.22.0 // indirect
 	golang.org/x/sync v0.8.0 // indirect
