@@ -16,6 +16,11 @@ import (
 
 	"github.com/blang/semver/v4"
 	"github.com/containers/image/v5/docker/reference"
+	"github.com/joelanford/kpm/internal/action"
+	specsv1 "github.com/joelanford/kpm/internal/api/specs/v1"
+	"github.com/joelanford/kpm/internal/bundle"
+	"github.com/joelanford/kpm/internal/fsutil"
+	"github.com/joelanford/kpm/internal/kpm"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -24,6 +29,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/operator-framework/api/pkg/operators/v1alpha1"
+
 	"github.com/operator-framework/operator-registry/alpha/action/migrations"
 	"github.com/operator-framework/operator-registry/alpha/declcfg"
 	"github.com/operator-framework/operator-registry/alpha/property"
@@ -34,12 +40,6 @@ import (
 	"github.com/operator-framework/operator-registry/pkg/image"
 	"github.com/operator-framework/operator-registry/pkg/registry"
 	"github.com/operator-framework/operator-registry/pkg/sqlite"
-
-	"github.com/joelanford/kpm/internal/action"
-	specsv1 "github.com/joelanford/kpm/internal/api/specs/v1"
-	"github.com/joelanford/kpm/internal/bundle"
-	"github.com/joelanford/kpm/internal/fsutil"
-	"github.com/joelanford/kpm/internal/kpm"
 )
 
 func BuildCatalog() *cobra.Command {
@@ -648,7 +648,7 @@ func populateDBRelatedImages(ctx context.Context, cfg *declcfg.DeclarativeConfig
 				ris.Delete(ri.Image)
 			}
 		}
-		for ri := range ris {
+		for _, ri := range sets.List(ris) {
 			cfg.Bundles[i].RelatedImages = append(cfg.Bundles[i].RelatedImages, declcfg.RelatedImage{Image: ri})
 		}
 	}
