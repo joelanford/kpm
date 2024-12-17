@@ -38,8 +38,8 @@ go install github.com/joelanford/kpm@latest
    apiVersion: specs.kpm.io/v1
    kind: Catalog
    registryNamespace: quay.io/joelanford
-name: kpm-example-catalog
-tag: bundles
+   name: kpm-example-catalog
+   tag: bundles
 
    cacheFormat: none
    migrationLevel: all
@@ -63,8 +63,8 @@ tag: bundles
    apiVersion: specs.kpm.io/v1
    kind: Catalog
    registryNamespace: quay.io/joelanford
-name: kpm-example-catalog
-tag: fbc
+   name: kpm-example-catalog
+   tag: fbc
 
    cacheFormat: json
    source:
@@ -99,8 +99,8 @@ tag: fbc
    apiVersion: specs.kpm.io/v1
    kind: Catalog
    registryNamespace: quay.io/joelanford
-name: kpm-demo-catalog
-tag: semver-migrated
+   name: kpm-demo-catalog
+   tag: semver-migrated
 
    migrationLevel: bundle-object-to-csv-metadata
    cacheFormat: pogreb.v1
