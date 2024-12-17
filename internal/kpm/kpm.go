@@ -12,12 +12,13 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/partial"
 	"github.com/google/go-containerregistry/pkg/v1/types"
-	"github.com/joelanford/kpm/internal/remote"
-	"github.com/joelanford/kpm/internal/tar"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2"
 	"oras.land/oras-go/v2/content"
 	"oras.land/oras-go/v2/content/oci"
+
+	"github.com/joelanford/kpm/internal/remote"
+	"github.com/joelanford/kpm/internal/tar"
 )
 
 type KPM struct {
@@ -100,21 +101,32 @@ func (k *KPM) Push(ctx context.Context, opts oras.CopyGraphOptions) error {
 	return nil
 }
 
-func (k *KPM) Mount() (string, error) {
+func (k *KPM) Mount(outputDir string) (string, error) {
 	img, err := partial.CompressedToImage(ggcrImage{k})
 	if err != nil {
 		return "", fmt.Errorf("failed to convert kpm to image: %w", err)
 	}
 
-	tmpDir, err := os.MkdirTemp("", "kpm-mount-")
-	if err != nil {
-		return "", fmt.Errorf("failed to create temporary directory: %w", err)
+	if outputDir == "" {
+		tmpDir, err := os.MkdirTemp("", "kpm-mount-")
+		if err != nil {
+			return "", fmt.Errorf("failed to create temporary directory: %w", err)
+		}
+		outputDir = tmpDir
+	} else {
+		if _, err := os.Stat(outputDir); err == nil {
+			return "", fmt.Errorf("%q already exists", outputDir)
+		}
+		if err := os.MkdirAll(outputDir, 0755); err != nil {
+			return "", fmt.Errorf("failed to create output directory: %w", err)
+		}
 	}
-	if err := tar.Extract(mutate.Extract(img), tmpDir); err != nil {
-		os.RemoveAll(tmpDir)
+
+	if err := tar.Extract(mutate.Extract(img), outputDir); err != nil {
+		os.RemoveAll(outputDir)
 		return "", fmt.Errorf("failed to extract image: %w", err)
 	}
-	return tmpDir, nil
+	return outputDir, nil
 }
 
 var (

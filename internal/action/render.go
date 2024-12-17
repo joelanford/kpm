@@ -8,12 +8,13 @@ import (
 	"text/template"
 
 	"github.com/containers/image/v5/docker/reference"
-	"github.com/joelanford/kpm/internal/kpm"
 
 	"github.com/operator-framework/operator-registry/alpha/action"
 	"github.com/operator-framework/operator-registry/alpha/action/migrations"
 	"github.com/operator-framework/operator-registry/alpha/declcfg"
 	"github.com/operator-framework/operator-registry/pkg/containertools"
+
+	"github.com/joelanford/kpm/internal/kpm"
 )
 
 type Render struct {
@@ -38,7 +39,7 @@ func (r *Render) renderKpm(ctx context.Context, kpmPath string) (*declcfg.Declar
 	if err != nil {
 		return nil, fmt.Errorf("failed to open kpm file %q: %w", kpmPath, err)
 	}
-	kpmContentRoot, err := kpmFile.Mount()
+	kpmContentRoot, err := kpmFile.Mount("")
 	if err != nil {
 		return nil, fmt.Errorf("failed to mount kpm file %q: %w", kpmPath, err)
 	}
