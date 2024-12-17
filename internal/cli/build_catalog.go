@@ -354,7 +354,7 @@ func getCatalogRef(registryNamespace, name, tag string) (reference.NamedTagged, 
 	repoName := fmt.Sprintf("%s/%s", registryNamespace, name)
 	ref, err := reference.ParseNamed(repoName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse registry namespace and name from spec: %v", repoName, err)
+		return nil, fmt.Errorf("failed to parse repository name %q from spec: %v", repoName, err)
 	}
 	if tag == "" {
 		tag = "latest"

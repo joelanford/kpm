@@ -10,9 +10,10 @@ import (
 	"text/template"
 
 	"github.com/containers/image/v5/docker/reference"
-	specsv1 "github.com/joelanford/kpm/internal/api/specs/v1"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"sigs.k8s.io/yaml"
+
+	specsv1 "github.com/joelanford/kpm/internal/api/specs/v1"
 )
 
 const (
@@ -116,7 +117,7 @@ func getBundleRef(b Bundle, registryNamespace string) (reference.NamedTagged, er
 	repoName := fmt.Sprintf("%s/%s", registryNamespace, repoShortName)
 	nameRef, err := reference.ParseNamed(repoName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse repository name %q: %v", err)
+		return nil, fmt.Errorf("failed to parse repository name %q: %v", repoName, err)
 	}
 	tag := fmt.Sprintf("v%s", b.Version())
 	return reference.WithTag(nameRef, tag)
@@ -134,7 +135,7 @@ func FilenameFromTemplate(tmplStr string) func(b Bundle) (string, error) {
 		}
 		var fileNameBuf bytes.Buffer
 		if err := fileNameTmpl.Execute(&fileNameBuf, tmplData); err != nil {
-			return "", fmt.Errorf("failed to render filename template %q: %w", fileNameTmpl, err)
+			return "", fmt.Errorf("failed to render filename template %q: %w", tmplStr, err)
 		}
 
 		return fileNameBuf.String(), nil

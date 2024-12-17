@@ -8,10 +8,11 @@ import (
 
 	"github.com/blang/semver/v4"
 	"github.com/containers/image/v5/docker/reference"
-	"github.com/joelanford/kpm/internal/kpm"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/yaml"
+
+	"github.com/joelanford/kpm/internal/kpm"
 )
 
 type registry struct {
@@ -64,7 +65,7 @@ func (b *registry) parseMetadata() error {
 	// read annotations file
 	annotationsData, err := fs.ReadFile(b.root, annotationsFile)
 	if err != nil {
-		return fmt.Errorf("failed to read file %q: %w", err)
+		return fmt.Errorf("failed to read file %q: %w", annotationsFile, err)
 	}
 
 	// parse annotations file
