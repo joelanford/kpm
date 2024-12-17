@@ -436,7 +436,7 @@ func renderBundlesDir(ctx context.Context, bundleRoot string) (*declcfg.Declarat
 			}
 		}
 		pm.bundles = append(pm.bundles, bundleMeta{
-			name:    fbc.Bundles[0].Name,
+			name:    bundle.Name,
 			version: vers,
 		})
 		if vers.GT(pm.maxVersion) {
