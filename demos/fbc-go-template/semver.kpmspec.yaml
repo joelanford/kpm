@@ -1,9 +1,7 @@
 apiVersion: specs.kpm.io/v1
 kind: Catalog
 
-registryNamespace: quay.io/joelanford
-name: kpm-demo-catalog
-tag: go-template-semver
+imageReference: quay.io/joelanford/kpm-demo-catalog:go-template-semver
 
 migrationLevel: bundle-object-to-csv-metadata
 cacheFormat: none

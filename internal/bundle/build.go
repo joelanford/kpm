@@ -38,7 +38,14 @@ func BuildFromSpecFile(specFileName string, filenameFunc func(Bundle) (string, e
 	}
 
 	outputFile, err := filenameFunc(b)
-	tagRef, desc, err := BuildFile(outputFile, b, spec.RegistryNamespace)
+	if err != nil {
+		return "", nil, ocispec.Descriptor{}, fmt.Errorf("failed to generate output file name: %v", err)
+	}
+	imageRef, err := StringFromBundleTemplate(spec.ImageReference)(b)
+	if err != nil {
+		return "", nil, ocispec.Descriptor{}, fmt.Errorf("failed to generate image reference: %v", err)
+	}
+	tagRef, desc, err := BuildFile(outputFile, b, imageRef)
 	if err != nil {
 		return "", nil, ocispec.Descriptor{}, fmt.Errorf("failed to build kpm bundle: %v", err)
 	}
@@ -60,12 +67,12 @@ func LoadFromSpec(spec specsv1.Bundle, baseDir string) (Bundle, error) {
 	}
 }
 
-func BuildFile(fileName string, b Bundle, registryNamespace string) (reference.NamedTagged, ocispec.Descriptor, error) {
+func BuildFile(fileName string, b Bundle, imageReference string) (reference.NamedTagged, ocispec.Descriptor, error) {
 	file, err := os.Create(fileName)
 	if err != nil {
 		return nil, ocispec.Descriptor{}, fmt.Errorf("failed to create output file: %v", err)
 	}
-	tagRef, desc, err := BuildWriter(file, b, registryNamespace)
+	tagRef, desc, err := BuildWriter(file, b, imageReference)
 	if err != nil {
 		return nil, ocispec.Descriptor{}, errors.Join(err, os.Remove(fileName))
 	}
@@ -73,8 +80,8 @@ func BuildFile(fileName string, b Bundle, registryNamespace string) (reference.N
 }
 
 // BuildWriter writes a bundle to a writer
-func BuildWriter(w io.Writer, b Bundle, registryNamespace string) (reference.NamedTagged, ocispec.Descriptor, error) {
-	tagRef, err := getBundleRef(b, registryNamespace)
+func BuildWriter(w io.Writer, b Bundle, imageReference string) (reference.NamedTagged, ocispec.Descriptor, error) {
+	tagRef, err := parseTagRef(imageReference)
 	if err != nil {
 		return nil, ocispec.Descriptor{}, fmt.Errorf("failed to get tagged reference from spec file: %w", err)
 	}
@@ -112,32 +119,34 @@ func ReadSpec(specReader io.Reader) (*specsv1.Bundle, error) {
 	return &spec, nil
 }
 
-func getBundleRef(b Bundle, registryNamespace string) (reference.NamedTagged, error) {
-	repoShortName := fmt.Sprintf("%s-bundle", b.PackageName())
-	repoName := fmt.Sprintf("%s/%s", registryNamespace, repoShortName)
-	nameRef, err := reference.ParseNamed(repoName)
+func parseTagRef(imageReference string) (reference.NamedTagged, error) {
+	namedRef, err := reference.ParseNamed(imageReference)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse repository name %q: %v", repoName, err)
+		return nil, fmt.Errorf("failed to parse image reference %q: %v", imageReference, err)
 	}
-	tag := fmt.Sprintf("v%s", b.Version())
-	return reference.WithTag(nameRef, tag)
+
+	tagRef, ok := namedRef.(reference.NamedTagged)
+	if !ok {
+		return nil, fmt.Errorf("image reference %q is not a tagged reference", imageReference)
+	}
+	return tagRef, nil
 }
 
-func FilenameFromTemplate(tmplStr string) func(b Bundle) (string, error) {
+func StringFromBundleTemplate(tmplStr string) func(b Bundle) (string, error) {
 	return func(b Bundle) (string, error) {
-		fileNameTmpl, err := template.New("filename").Delims("{", "}").Parse(tmplStr)
+		tmpl, err := template.New("").Delims("{", "}").Parse(tmplStr)
 		if err != nil {
-			return "", fmt.Errorf("invalid filename template %q: %w", tmplStr, err)
+			return "", fmt.Errorf("invalid template %q: %w", tmplStr, err)
 		}
 		tmplData := map[string]string{
 			"PackageName": b.PackageName(),
 			"Version":     b.Version().String(),
 		}
-		var fileNameBuf bytes.Buffer
-		if err := fileNameTmpl.Execute(&fileNameBuf, tmplData); err != nil {
-			return "", fmt.Errorf("failed to render filename template %q: %w", tmplStr, err)
+		var buf bytes.Buffer
+		if err := tmpl.Execute(&buf, tmplData); err != nil {
+			return "", fmt.Errorf("failed to render template %q: %w", tmplStr, err)
 		}
 
-		return fileNameBuf.String(), nil
+		return buf.String(), nil
 	}
 }

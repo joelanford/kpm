@@ -22,7 +22,7 @@ func BuildBundle() *cobra.Command {
 		Run: func(cmd *cobra.Command, args []string) {
 			bundleSpecFile := args[0]
 
-			outputFile, tagRef, desc, err := bundle.BuildFromSpecFile(bundleSpecFile, bundle.FilenameFromTemplate(outputFileTemplate))
+			outputFile, tagRef, desc, err := bundle.BuildFromSpecFile(bundleSpecFile, bundle.StringFromBundleTemplate(outputFileTemplate))
 			if err != nil {
 				cmd.PrintErrf("failed to build bundle: %v\n", err)
 				os.Exit(1)

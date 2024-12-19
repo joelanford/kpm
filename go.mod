@@ -3,6 +3,7 @@ module github.com/joelanford/kpm
 go 1.23.3
 
 require (
+	github.com/Masterminds/semver/v3 v3.2.1
 	github.com/blang/semver/v4 v4.0.0
 	github.com/containers/image/v5 v5.32.2
 	github.com/go-sprout/sprout v0.6.0
@@ -27,7 +28,6 @@ require (
 	dario.cat/mergo v1.0.0 // indirect
 	github.com/AdaLogics/go-fuzz-headers v0.0.0-20230811130428-ced1acdcaa24 // indirect
 	github.com/BurntSushi/toml v1.4.0 // indirect
-	github.com/Masterminds/semver/v3 v3.2.1 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/Microsoft/hcsshim v0.12.5 // indirect
 	github.com/akrylysov/pogreb v0.10.2 // indirect

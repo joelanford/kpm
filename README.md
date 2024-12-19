@@ -20,7 +20,7 @@ go install github.com/joelanford/kpm@latest
    $ cat << EOF > bundle.kpmspec.yaml
    apiVersion: specs.kpm.io/v1
    kind: Bundle
-   registryNamespace: quay.io/joelanford
+   imageReference: quay.io/joelanford/{.PackageName}-bundle:v{.Version}
    bundleRoot: ./my-olm-package/0.0.1
    EOF
 
@@ -37,9 +37,7 @@ go install github.com/joelanford/kpm@latest
    $ cat << EOF > catalog.kpmspec.yaml
    apiVersion: specs.kpm.io/v1
    kind: Catalog
-   registryNamespace: quay.io/joelanford
-   name: kpm-example-catalog
-   tag: bundles
+   imageReference: quay.io/joelanford/kpm-example-catalog:bundles
 
    cacheFormat: none
    migrationLevel: all
@@ -62,9 +60,7 @@ go install github.com/joelanford/kpm@latest
    $ cat << EOF > catalog.kpmspec.yaml
    apiVersion: specs.kpm.io/v1
    kind: Catalog
-   registryNamespace: quay.io/joelanford
-   name: kpm-example-catalog
-   tag: fbc
+   imageReference: quay.io/joelanford/kpm-example-catalog:fbc
 
    cacheFormat: json
    source:
@@ -98,9 +94,7 @@ go install github.com/joelanford/kpm@latest
    $ cat << EOF > catalog.kpmspec.yaml
    apiVersion: specs.kpm.io/v1
    kind: Catalog
-   registryNamespace: quay.io/joelanford
-   name: kpm-demo-catalog
-   tag: semver-migrated
+   imageReference: quay.io/joelanford/kpm-demo-catalog:semver-migrated
 
    migrationLevel: bundle-object-to-csv-metadata
    cacheFormat: pogreb.v1

@@ -17,9 +17,7 @@ const (
 type Catalog struct {
 	metav1.TypeMeta `json:",inline"`
 
-	RegistryNamespace string `json:"registryNamespace"`
-	Name              string `json:"name"`
-	Tag               string `json:"tag"`
+	ImageReference string `json:"imageReference"`
 
 	MigrationLevel string `json:"migrationLevel,omitempty"`
 	CacheFormat    string `json:"cacheFormat,omitempty"`
@@ -58,6 +56,6 @@ type FBCGoTemplateSource struct {
 }
 
 type LegacySource struct {
-	BundleRoot              string `json:"bundleRoot"`
-	BundleRegistryNamespace string `json:"bundleRegistryNamespace"`
+	BundleRoot           string `json:"bundleRoot"`
+	BundleImageReference string `json:"bundleImageReference"`
 }

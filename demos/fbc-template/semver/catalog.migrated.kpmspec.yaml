@@ -1,9 +1,7 @@
 apiVersion: specs.kpm.io/v1
 kind: Catalog
 
-registryNamespace: quay.io/joelanford
-name: kpm-demo-catalog
-tag: semver-migrated
+imageReference: quay.io/joelanford/kpm-demo-catalog:semver-migrated
 
 migrationLevel: all
 cacheFormat: pogreb.v1

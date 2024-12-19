@@ -11,8 +11,8 @@ const (
 type Bundle struct {
 	metav1.TypeMeta `json:",inline"`
 
-	MediaType         string            `json:"mediaType"`
-	RegistryNamespace string            `json:"registryNamespace"`
-	BundleRoot        string            `json:"bundleRoot"`
-	ExtraAnnotations  map[string]string `json:"extraAnnotations,omitempty"`
+	MediaType        string            `json:"mediaType"`
+	ImageReference   string            `json:"imageReference"`
+	BundleRoot       string            `json:"bundleRoot"`
+	ExtraAnnotations map[string]string `json:"extraAnnotations,omitempty"`
 }

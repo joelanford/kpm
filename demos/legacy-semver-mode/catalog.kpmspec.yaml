@@ -1,9 +1,7 @@
 apiVersion: specs.kpm.io/v1
 kind: Catalog
 
-registryNamespace: quay.io/joelanford
-name: zookeeper-operator-catalog
-tag: latest
+imageReference: quay.io/joelanford/zookeeper-operator-catalog:latest
 
 cacheFormat: none
 migrationLevel: all
@@ -12,4 +10,4 @@ source:
   sourceType: legacy
   legacy:
     bundleRoot: .
-    bundleRegistryNamespace: "quay.io/joelanford"
+    bundleImageReference: "quay.io/joelanford/{.PackageName}-bundle:v{.Version}"

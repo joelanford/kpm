@@ -145,9 +145,7 @@ catalogs.specs.kpm.io/v1
 
       apiVersion: specs.kpm.io/v1
       kind: Catalog
-      registryNamespace: quay.io/myorg
-      name: my-catalog
-      tag: latest
+      imageReference: quay.io/myorg/my-catalog:latest
 
       cacheFormat: none
       source:
@@ -182,7 +180,7 @@ func buildCatalogFromSpec(ctx context.Context, specFileName, outputDirectory str
 		return fmt.Errorf("failed to read spec file: %w", err)
 	}
 
-	tagRef, err := getCatalogRef(spec.RegistryNamespace, spec.Name, spec.Tag)
+	tagRef, err := parseTagRef(spec.ImageReference)
 	if err != nil {
 		return fmt.Errorf("failed to get tagged reference from spec file: %w", err)
 	}
@@ -225,7 +223,10 @@ func buildCatalogFromSpec(ctx context.Context, specFileName, outputDirectory str
 		})
 		fbc, err = renderFBCGoTemplate(ctx, bundleSpecGlobs, templateFile, templateHelperGlobs, valuesFiles, outputDirectory)
 	case specsv1.CatalogSpecSourceTypeLegacy:
-		fbc, err = renderLegacyBundlesDir(ctx, pathForSpecPath(specFileDir, spec.Source.Legacy.BundleRoot), spec.Source.Legacy.BundleRegistryNamespace, outputDirectory)
+		fbc, err = renderLegacyBundlesDir(ctx,
+			pathForSpecPath(specFileDir, spec.Source.Legacy.BundleRoot),
+			spec.Source.Legacy.BundleImageReference,
+			outputDirectory)
 	default:
 		return fmt.Errorf("unsupported source type %q", spec.Source.SourceType)
 	}
@@ -350,18 +351,15 @@ func readCatalogSpec(specFile string) (*specsv1.Catalog, error) {
 	return &spec, nil
 }
 
-func getCatalogRef(registryNamespace, name, tag string) (reference.NamedTagged, error) {
-	repoName := fmt.Sprintf("%s/%s", registryNamespace, name)
-	ref, err := reference.ParseNamed(repoName)
+func parseTagRef(imageReference string) (reference.NamedTagged, error) {
+	namedRef, err := reference.ParseNamed(imageReference)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse repository name %q from spec: %v", repoName, err)
+		return nil, fmt.Errorf("failed to parse image reference %q: %v", imageReference, err)
 	}
-	if tag == "" {
-		tag = "latest"
-	}
-	tagRef, err := reference.WithTag(ref, tag)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse tag reference: %v", err)
+
+	tagRef, ok := namedRef.(reference.NamedTagged)
+	if !ok {
+		return nil, fmt.Errorf("image reference %q is not a tagged reference", imageReference)
 	}
 	return tagRef, nil
 }
@@ -505,7 +503,7 @@ func renderBundlesDir(ctx context.Context, bundleRoot string) (*declcfg.Declarat
 	return fbc, nil
 }
 
-func renderLegacyBundlesDir(ctx context.Context, bundleRoot, registryNamespace, outputDirectory string) (*declcfg.DeclarativeConfig, error) {
+func renderLegacyBundlesDir(ctx context.Context, bundleRoot, bundleImageReference, outputDirectory string) (*declcfg.DeclarativeConfig, error) {
 	db, err := sql.Open("sqlite3", "file::memory:?mode=memory&cache=shared")
 	if err != nil {
 		return nil, err
@@ -549,7 +547,11 @@ func renderLegacyBundlesDir(ctx context.Context, bundleRoot, registryNamespace, 
 		}
 
 		outputFile := filepath.Join(outputDirectory, fmt.Sprintf("%s-%s.bundle.kpm", b.PackageName(), b.Version()))
-		tagRef, desc, err := bundle.BuildFile(outputFile, b, registryNamespace)
+		imageRef, err := bundle.StringFromBundleTemplate(bundleImageReference)(b)
+		if err != nil {
+			return nil, err
+		}
+		tagRef, desc, err := bundle.BuildFile(outputFile, b, imageRef)
 		if err != nil {
 			return nil, err
 		}
@@ -708,7 +710,9 @@ func renderFBCGoTemplate(ctx context.Context, bundleSpecGlobs []string, template
 
 	bundlesMetas := map[string]declcfg.Meta{}
 	for _, bundleKpmFile := range bundleKpmFiles {
-		outputFile, tagRef, desc, err := bundle.BuildFromSpecFile(bundleKpmFile, bundle.FilenameFromTemplate(filepath.Join(outputDirectory, "{.PackageName}-v{.Version}.bundle.kpm")))
+		outputFile, tagRef, desc, err := bundle.BuildFromSpecFile(bundleKpmFile,
+			bundle.StringFromBundleTemplate(filepath.Join(outputDirectory, "{.PackageName}-v{.Version}.bundle.kpm")),
+		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to build bundle: %w", err)
 		}
