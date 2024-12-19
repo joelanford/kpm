@@ -13,13 +13,16 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"testing/fstest"
 	"text/template"
 
 	mmsemver "github.com/Masterminds/semver/v3"
 	"github.com/blang/semver/v4"
 	"github.com/containers/image/v5/docker/reference"
+	"github.com/dschmidt/go-layerfs"
 	sprig "github.com/go-sprout/sprout/sprigin"
 	_ "github.com/mattn/go-sqlite3"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"golang.org/x/exp/maps"
@@ -250,10 +253,7 @@ func buildCatalogFromSpec(ctx context.Context, specFileName, outputDirectory str
 	if err := declcfg.WriteFS(*fbc, tmpFBCDir, declcfg.WriteYAML, ".yaml"); err != nil {
 		return fmt.Errorf("failed to write FBC: %w", err)
 	}
-	fbcFsys, err := fsutil.Prefix(os.DirFS(tmpFBCDir), "/catalog")
-	if err != nil {
-		return fmt.Errorf("failed to create FBC filesystem: %v", err)
-	}
+	fbcFsys := os.DirFS(tmpFBCDir)
 
 	if spec.CacheFormat == "" {
 		spec.CacheFormat = "json"
@@ -283,7 +283,7 @@ func buildCatalogFromSpec(ctx context.Context, specFileName, outputDirectory str
 	if err := c.Close(); err != nil {
 		return fmt.Errorf("failed to close cache: %w", err)
 	}
-	cacheFsys, err := fsutil.Prefix(os.DirFS(tmpCacheDir), "/tmp/cache")
+	cacheFsys, err := fsutil.Prefix("/tmp/cache", os.DirFS(tmpCacheDir))
 	if err != nil {
 		return fmt.Errorf("failed to create cache fs: %v", err)
 	}
@@ -304,7 +304,7 @@ func writeCatalog(fbcFsys fs.FS, cacheFsys fs.FS, tagRef reference.NamedTagged, 
 		containertools.ConfigsLocationLabel: "/configs",
 	}
 
-	configsFsys, err := fsutil.Prefix(fbcFsys, "/configs")
+	configsFsys, err := fsutil.Prefix("/configs", fbcFsys)
 	if err != nil {
 		return fmt.Errorf("failed to create configs fs: %v", err)
 	}
@@ -504,6 +504,8 @@ func renderBundlesDir(ctx context.Context, bundleRoot string) (*declcfg.Declarat
 }
 
 func renderLegacyBundlesDir(ctx context.Context, bundleRoot, bundleImageReference, outputDirectory string) (*declcfg.DeclarativeConfig, error) {
+	logrus.SetOutput(io.Discard)
+
 	db, err := sql.Open("sqlite3", "file::memory:?mode=memory&cache=shared")
 	if err != nil {
 		return nil, err
@@ -521,54 +523,22 @@ func renderLegacyBundlesDir(ctx context.Context, bundleRoot, bundleImageReferenc
 	if err != nil {
 		return nil, err
 	}
-	graphLoader, err := sqlite.NewSQLGraphLoaderFromDB(db)
-	if err != nil {
-		return nil, err
-	}
-
-	updateGraphMode, err := getLegacyUpdateGraphMode(bundleRoot)
-	if err != nil {
-		return nil, err
-	}
-
-	imgDirMap := map[image.Reference]string{}
-	dirEntries, err := os.ReadDir(bundleRoot)
-	if err != nil {
-		return nil, err
-	}
-	for _, dirEntry := range dirEntries {
-		if !dirEntry.IsDir() {
-			continue
-		}
-		bundleDir := filepath.Join(bundleRoot, dirEntry.Name())
-		b, err := bundle.NewRegistry(os.DirFS(bundleDir))
-		if err != nil {
-			return nil, err
-		}
-
-		outputFile := filepath.Join(outputDirectory, fmt.Sprintf("%s-%s.bundle.kpm", b.PackageName(), b.Version()))
-		imageRef, err := bundle.StringFromBundleTemplate(bundleImageReference)(b)
-		if err != nil {
-			return nil, err
-		}
-		tagRef, desc, err := bundle.BuildFile(outputFile, b, imageRef)
-		if err != nil {
-			return nil, err
-		}
-		digestRef, err := reference.WithDigest(tagRef, desc.Digest)
-		if err != nil {
-			return nil, err
-		}
-		fmt.Printf("Bundle written to %s with tag %q (digest: %s)\n", outputFile, tagRef, desc.Digest)
-
-		imgDirMap[digestRef] = bundleDir
-	}
 
 	querier := sqlite.NewSQLLiteQuerierFromDb(db)
-	logrus.SetOutput(io.Discard)
-	dp := registry.NewDirectoryPopulator(loader, graphLoader, querier, imgDirMap, nil)
-	if err := dp.Populate(updateGraphMode); err != nil {
+
+	isPkgManDir, err := isPackageManifestsDir(bundleRoot)
+	if err != nil {
 		return nil, err
+	}
+	if isPkgManDir {
+		err = populateFromLegacyPackageManifestDir(loader, bundleRoot, bundleImageReference, outputDirectory)
+	} else {
+		var graphLoader registry.GraphLoader
+		graphLoader, err = sqlite.NewSQLGraphLoaderFromDB(db)
+		if err != nil {
+			return nil, err
+		}
+		err = populateFromLegacyBundlesDirectory(loader, querier, graphLoader, bundleRoot, bundleImageReference, outputDirectory)
 	}
 	model, err := sqlite.ToModel(ctx, querier)
 	if err != nil {
@@ -581,6 +551,154 @@ func renderLegacyBundlesDir(ctx context.Context, bundleRoot, bundleImageReferenc
 	}
 
 	return &fbc, err
+}
+
+func isPackageManifestsDir(bundleRoot string) (bool, error) {
+	entries, err := os.ReadDir(bundleRoot)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if !strings.HasSuffix(entry.Name(), ".package.yaml") {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func readPackageManifestsFile(bundleRoot string) (*registry.PackageManifest, []string, error) {
+	entries, err := os.ReadDir(bundleRoot)
+	if err != nil {
+		return nil, nil, err
+	}
+	var (
+		pm         *registry.PackageManifest
+		bundleDirs []string
+		errs       []error
+	)
+	for _, entry := range entries {
+		path := filepath.Join(bundleRoot, entry.Name())
+		if entry.IsDir() {
+			bundleDirs = append(bundleDirs, path)
+			continue
+		}
+		fileData, err := os.ReadFile(path)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		var tryPM registry.PackageManifest
+		if err := yaml.Unmarshal(fileData, &tryPM); err != nil {
+			continue
+		}
+		if tryPM.PackageName != "" {
+			if pm != nil {
+				return nil, nil, fmt.Errorf("multiple packages manifest files found in %q, only 1 allowed", bundleRoot)
+			}
+			pm = &tryPM
+		}
+	}
+	if pm != nil {
+		return pm, bundleDirs, nil
+	}
+	if len(errs) > 0 {
+		return nil, nil, fmt.Errorf("failed trying to find package manifests layout: %v", errs)
+	}
+	return nil, nil, nil
+}
+
+func populateFromLegacyPackageManifestDir(loader registry.Load, bundleRoot, bundleImageReference, outputDirectory string) error {
+	pm, bundleDirs, err := readPackageManifestsFile(bundleRoot)
+	if err != nil {
+		return err
+	}
+	for _, bundleDir := range bundleDirs {
+		annotations := map[string]map[string]string{
+			"annotations": {
+				"operators.operatorframework.io.bundle.package.v1":   pm.PackageName,
+				"operators.operatorframework.io.bundle.mediatype.v1": "registry+v1",
+				"operators.operatorframework.io.bundle.manifests.v1": "manifests/",
+				"operators.operatorframework.io.bundle.metadata.v1":  "metadata/",
+			},
+		}
+		annotationsYAML, err := yaml.Marshal(annotations)
+		if err != nil {
+			return err
+		}
+		manifestsFS, err := fsutil.Prefix("manifests", os.DirFS(bundleDir))
+		if err != nil {
+			return err
+		}
+		metadataFS, err := fsutil.Prefix("metadata", &fstest.MapFS{
+			"annotations.yaml": &fstest.MapFile{
+				Data: annotationsYAML,
+				Mode: 0644,
+			},
+		})
+		if err != nil {
+			return err
+		}
+
+		bundleFS := layerfs.New(manifestsFS, metadataFS)
+		if _, _, _, err = buildBundle(bundleFS, bundleImageReference, outputDirectory); err != nil {
+			return err
+		}
+	}
+
+	dl := sqlite.NewSQLLoaderForDirectory(loader, bundleRoot)
+	return dl.Populate()
+}
+
+func populateFromLegacyBundlesDirectory(loader registry.Load, querier registry.Query, graphLoader registry.GraphLoader, bundleRoot, bundleImageReference, outputDirectory string) error {
+	updateGraphMode, err := getLegacyUpdateGraphMode(bundleRoot)
+	if err != nil {
+		return err
+	}
+
+	imgDirMap := map[image.Reference]string{}
+	dirEntries, err := os.ReadDir(bundleRoot)
+	if err != nil {
+		return err
+	}
+	for _, dirEntry := range dirEntries {
+		if !dirEntry.IsDir() {
+			continue
+		}
+		bundleDir := filepath.Join(bundleRoot, dirEntry.Name())
+		_, tagRef, desc, err := buildBundle(os.DirFS(bundleDir), bundleImageReference, outputDirectory)
+		if err != nil {
+			return err
+		}
+		digestRef, err := reference.WithDigest(tagRef, desc.Digest)
+		if err != nil {
+			return err
+		}
+		imgDirMap[digestRef] = bundleDir
+	}
+	dp := registry.NewDirectoryPopulator(loader, graphLoader, querier, imgDirMap, nil)
+	return dp.Populate(updateGraphMode)
+}
+
+func buildBundle(bundleFS fs.FS, bundleImageReference string, outputDirectory string) (string, reference.NamedTagged, ocispec.Descriptor, error) {
+	b, err := bundle.NewRegistry(bundleFS)
+	if err != nil {
+		return "", nil, ocispec.Descriptor{}, err
+	}
+
+	outputFile := filepath.Join(outputDirectory, fmt.Sprintf("%s-%s.bundle.kpm", b.PackageName(), b.Version()))
+	imageRef, err := bundle.StringFromBundleTemplate(bundleImageReference)(b)
+	if err != nil {
+		return "", nil, ocispec.Descriptor{}, err
+	}
+	tagRef, desc, err := bundle.BuildFile(outputFile, b, imageRef)
+	if err != nil {
+		return "", nil, ocispec.Descriptor{}, err
+	}
+	fmt.Printf("Bundle written to %s with tag %q (digest: %s)\n", outputFile, tagRef, desc.Digest)
+	return outputFile, tagRef, desc, nil
 }
 
 func getLegacyUpdateGraphMode(bundleRoot string) (registry.Mode, error) {

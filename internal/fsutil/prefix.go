@@ -17,7 +17,7 @@ type prefixFS struct {
 	prefixDirs sets.Set[string]
 }
 
-func Prefix(fsys fs.FS, prefix string) (fs.FS, error) {
+func Prefix(prefix string, fsys fs.FS) (fs.FS, error) {
 	if prefix != filepath.Clean(prefix) || len(prefix) == 0 {
 		return nil, fmt.Errorf("invalid prefix %q", prefix)
 	}
