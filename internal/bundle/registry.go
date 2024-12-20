@@ -9,6 +9,7 @@ import (
 	"github.com/blang/semver/v4"
 	"github.com/containers/image/v5/docker/reference"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"golang.org/x/exp/maps"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/yaml"
 
@@ -25,6 +26,10 @@ type registry struct {
 
 func NewRegistry(root fs.FS, extraAnnotations map[string]string) (Bundle, error) {
 	b := &registry{root: root}
+	if extraAnnotations != nil {
+		b.annotations = make(map[string]string, len(extraAnnotations))
+		maps.Copy(b.annotations, extraAnnotations)
+	}
 	if err := b.parseMetadata(); err != nil {
 		return nil, err
 	}
@@ -98,7 +103,10 @@ func (b *registry) parseMetadata() error {
 	}
 
 	b.packageName = packageName
-	b.annotations = annotations.Annotations
+	if b.annotations == nil {
+		b.annotations = make(map[string]string, len(annotations.Annotations))
+	}
+	maps.Copy(b.annotations, annotations.Annotations)
 	return nil
 }
 
