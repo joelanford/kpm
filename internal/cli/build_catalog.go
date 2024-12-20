@@ -696,7 +696,7 @@ func populateFromLegacyBundlesDirectory(loader registry.Load, querier registry.Q
 		if err != nil {
 			return err
 		}
-		digestRef, err := reference.WithDigest(tagRef, desc.Digest)
+		digestRef, err := reference.WithDigest(reference.TrimNamed(tagRef), desc.Digest)
 		if err != nil {
 			return err
 		}
