@@ -540,6 +540,9 @@ func renderLegacyBundlesDir(ctx context.Context, bundleRoot, bundleImageReferenc
 		}
 		err = populateFromLegacyBundlesDirectory(loader, querier, graphLoader, bundleRoot, bundleImageReference, outputDirectory)
 	}
+	if err != nil {
+		return nil, err
+	}
 	model, err := sqlite.ToModel(ctx, querier)
 	if err != nil {
 		return nil, err
@@ -562,7 +565,7 @@ func isPackageManifestsDir(bundleRoot string) (bool, error) {
 		if entry.IsDir() {
 			continue
 		}
-		if !strings.HasSuffix(entry.Name(), ".package.yaml") {
+		if strings.HasSuffix(entry.Name(), ".package.yaml") {
 			return true, nil
 		}
 	}
