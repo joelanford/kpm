@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -262,7 +263,7 @@ func buildCatalogFromSpec(ctx context.Context, specFileName, outputDirectory str
 	case "json", "pogreb.v1":
 		break // all other cases return within the switch
 	case "none":
-		return writeCatalog(fbcFsys, nil, tagRef, outputDirectory)
+		return writeCatalog(fbcFsys, nil, tagRef, spec.ExtraAnnotations, outputDirectory)
 	default:
 		return fmt.Errorf("unsupported cache format %q", spec.CacheFormat)
 	}
@@ -288,7 +289,7 @@ func buildCatalogFromSpec(ctx context.Context, specFileName, outputDirectory str
 		return fmt.Errorf("failed to create cache fs: %v", err)
 	}
 
-	return writeCatalog(fbcFsys, cacheFsys, tagRef, outputDirectory)
+	return writeCatalog(fbcFsys, cacheFsys, tagRef, spec.ExtraAnnotations, outputDirectory)
 }
 
 func mapSlice[I, O any](in []I, mapFunc func(I) O) []O {
@@ -299,10 +300,13 @@ func mapSlice[I, O any](in []I, mapFunc func(I) O) []O {
 	return out
 }
 
-func writeCatalog(fbcFsys fs.FS, cacheFsys fs.FS, tagRef reference.NamedTagged, outputDirectory string) error {
-	annotations := map[string]string{
-		containertools.ConfigsLocationLabel: "/configs",
+func writeCatalog(fbcFsys fs.FS, cacheFsys fs.FS, tagRef reference.NamedTagged, extraAnnotations map[string]string, outputDirectory string) error {
+	annotations := make(map[string]string, len(extraAnnotations)+1)
+	maps.Copy(annotations, extraAnnotations)
+	for k, v := range extraAnnotations {
+		annotations[k] = v
 	}
+	annotations[containertools.ConfigsLocationLabel] = "/configs"
 
 	configsFsys, err := fsutil.Prefix("/configs", fbcFsys)
 	if err != nil {
@@ -646,7 +650,7 @@ func populateFromLegacyPackageManifestDir(loader registry.Load, bundleRoot, bund
 		}
 
 		bundleFS := layerfs.New(manifestsFS, metadataFS)
-		b, err := bundle.NewRegistry(bundleFS)
+		b, err := bundle.NewRegistry(bundleFS, nil)
 		if err != nil {
 			return err
 		}
@@ -672,9 +676,10 @@ func populateFromLegacyBundlesDirectory(loader registry.Load, querier registry.Q
 	}
 
 	type bundleInfo struct {
-		version semver.Version
-		ref     reference.Canonical
-		dir     string
+		packageName string
+		version     semver.Version
+		ref         reference.Canonical
+		dir         string
 	}
 
 	var bundleInfos []bundleInfo
@@ -683,7 +688,7 @@ func populateFromLegacyBundlesDirectory(loader registry.Load, querier registry.Q
 			continue
 		}
 		bundleDir := filepath.Join(bundleRoot, dirEntry.Name())
-		b, err := bundle.NewRegistry(os.DirFS(bundleDir))
+		b, err := bundle.NewRegistry(os.DirFS(bundleDir), nil)
 		if err != nil {
 			return err
 		}
@@ -696,10 +701,14 @@ func populateFromLegacyBundlesDirectory(loader registry.Load, querier registry.Q
 			return err
 		}
 		bundleInfos = append(bundleInfos, bundleInfo{
-			version: b.Version(),
-			ref:     digestRef,
-			dir:     bundleDir,
+			packageName: b.PackageName(),
+			version:     b.Version(),
+			ref:         digestRef,
+			dir:         bundleDir,
 		})
+	}
+	if len(bundleInfos) == 0 {
+		return nil
 	}
 
 	// The registry package uses a map of ref -> bundleDir to allow callers to ask for a
@@ -707,16 +716,56 @@ func populateFromLegacyBundlesDirectory(loader registry.Load, querier registry.Q
 	// map (which yields k/v pairs in random order), but also depends on the order to build
 	// the database correctly. To work around this bug, we will pre-sort the bundles by
 	// version and add them one at a time.
+	//
+	// At the same time, there seems to be packages in the existing operatorhub.io repo
+	// that expects their bundles to be added all at one (e.g. api-operator), so we'll try
+	// both ways:
+	//  1. All at once.
+	//  2. If (1) fails, incrementally
+	//
+	// If both attempts fail, we'll return both errors
 	slices.SortFunc(bundleInfos, func(a, b bundleInfo) int {
 		return a.version.Compare(b.version)
 	})
+
+	// Try all at once a few times. In many cases, a failure is "unlucky"
+	// due to Go's random map iteration.
+	var allAtOnceErr error
+	for range 5 {
+		imgMap := make(map[image.Reference]string, len(bundleInfos))
+		for _, bi := range bundleInfos {
+			imgMap[bi.ref] = bi.dir
+		}
+		dp := registry.NewDirectoryPopulator(loader, graphLoader, querier, imgMap, nil)
+		if err := dp.Populate(updateGraphMode); err == nil {
+			return nil
+		} else if allAtOnceErr == nil {
+			allAtOnceErr = err
+		}
+
+		// Best-effort: remove the bundles that were added prior to the error. This is necessary
+		// because directoryPopulator.Populate does not seem to use a database transaction
+		// and instead leaves the database in an intermediate state.
+		_ = loader.RemovePackage(bundleInfos[0].packageName)
+		_ = loader.RemoveStrandedBundles()
+	}
+
+	// Try individually
+	var incrementalAddErr error
 	for _, bi := range bundleInfos {
 		dp := registry.NewDirectoryPopulator(loader, graphLoader, querier, map[image.Reference]string{bi.ref: bi.dir}, nil)
 		if err := dp.Populate(updateGraphMode); err != nil {
-			return err
+			incrementalAddErr = err
+			break
 		}
 	}
-	return nil
+	if incrementalAddErr == nil {
+		return nil
+	}
+	return errors.Join(
+		fmt.Errorf("failed attempt to add all bundles together: %v", allAtOnceErr),
+		fmt.Errorf("failed to add bundles incrementally one at a time: %v", incrementalAddErr),
+	)
 }
 
 func buildBundle(b bundle.Bundle, bundleImageReference string, outputDirectory string) (string, reference.NamedTagged, ocispec.Descriptor, error) {

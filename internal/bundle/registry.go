@@ -23,7 +23,7 @@ type registry struct {
 	annotations map[string]string
 }
 
-func NewRegistry(root fs.FS) (Bundle, error) {
+func NewRegistry(root fs.FS, extraAnnotations map[string]string) (Bundle, error) {
 	b := &registry{root: root}
 	if err := b.parseMetadata(); err != nil {
 		return nil, err

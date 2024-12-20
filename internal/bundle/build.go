@@ -61,7 +61,7 @@ func LoadFromSpec(spec specsv1.Bundle, baseDir string) (Bundle, error) {
 
 	switch spec.MediaType {
 	case MediaTypeOLMOperatorFrameworkRegistryV1:
-		return NewRegistry(os.DirFS(bundleDir))
+		return NewRegistry(os.DirFS(bundleDir), spec.ExtraAnnotations)
 	default:
 		return nil, fmt.Errorf("unsupported media type: %s", spec.MediaType)
 	}
