@@ -646,7 +646,12 @@ func populateFromLegacyPackageManifestDir(loader registry.Load, bundleRoot, bund
 		}
 
 		bundleFS := layerfs.New(manifestsFS, metadataFS)
-		if _, _, _, err = buildBundle(bundleFS, bundleImageReference, outputDirectory); err != nil {
+		b, err := bundle.NewRegistry(bundleFS)
+		if err != nil {
+			return err
+		}
+
+		if _, _, _, err = buildBundle(b, bundleImageReference, outputDirectory); err != nil {
 			return err
 		}
 	}
@@ -661,17 +666,28 @@ func populateFromLegacyBundlesDirectory(loader registry.Load, querier registry.Q
 		return err
 	}
 
-	imgDirMap := map[image.Reference]string{}
 	dirEntries, err := os.ReadDir(bundleRoot)
 	if err != nil {
 		return err
 	}
+
+	type bundleInfo struct {
+		version semver.Version
+		ref     reference.Canonical
+		dir     string
+	}
+
+	var bundleInfos []bundleInfo
 	for _, dirEntry := range dirEntries {
 		if !dirEntry.IsDir() {
 			continue
 		}
 		bundleDir := filepath.Join(bundleRoot, dirEntry.Name())
-		_, tagRef, desc, err := buildBundle(os.DirFS(bundleDir), bundleImageReference, outputDirectory)
+		b, err := bundle.NewRegistry(os.DirFS(bundleDir))
+		if err != nil {
+			return err
+		}
+		_, tagRef, desc, err := buildBundle(b, bundleImageReference, outputDirectory)
 		if err != nil {
 			return err
 		}
@@ -679,18 +695,31 @@ func populateFromLegacyBundlesDirectory(loader registry.Load, querier registry.Q
 		if err != nil {
 			return err
 		}
-		imgDirMap[digestRef] = bundleDir
+		bundleInfos = append(bundleInfos, bundleInfo{
+			version: b.Version(),
+			ref:     digestRef,
+			dir:     bundleDir,
+		})
 	}
-	dp := registry.NewDirectoryPopulator(loader, graphLoader, querier, imgDirMap, nil)
-	return dp.Populate(updateGraphMode)
+
+	// The registry package uses a map of ref -> bundleDir to allow callers to ask for a
+	// set of bundles to be added to the database. Unfortunately, it naively iterates the
+	// map (which yields k/v pairs in random order), but also depends on the order to build
+	// the database correctly. To work around this bug, we will pre-sort the bundles by
+	// version and add them one at a time.
+	slices.SortFunc(bundleInfos, func(a, b bundleInfo) int {
+		return a.version.Compare(b.version)
+	})
+	for _, bi := range bundleInfos {
+		dp := registry.NewDirectoryPopulator(loader, graphLoader, querier, map[image.Reference]string{bi.ref: bi.dir}, nil)
+		if err := dp.Populate(updateGraphMode); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-func buildBundle(bundleFS fs.FS, bundleImageReference string, outputDirectory string) (string, reference.NamedTagged, ocispec.Descriptor, error) {
-	b, err := bundle.NewRegistry(bundleFS)
-	if err != nil {
-		return "", nil, ocispec.Descriptor{}, err
-	}
-
+func buildBundle(b bundle.Bundle, bundleImageReference string, outputDirectory string) (string, reference.NamedTagged, ocispec.Descriptor, error) {
 	outputFile := filepath.Join(outputDirectory, fmt.Sprintf("%s-%s.bundle.kpm", b.PackageName(), b.Version()))
 	imageRef, err := bundle.StringFromBundleTemplate(bundleImageReference)(b)
 	if err != nil {
