@@ -790,7 +790,7 @@ func getLegacyUpdateGraphMode(bundleRoot string) (registry.Mode, error) {
 	ciCfgData, err := os.ReadFile(filepath.Join(bundleRoot, "ci.yaml"))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return registry.ReplacesMode, nil
+			return registry.SemVerMode, nil
 		}
 		return -1, err
 	}
