@@ -45,8 +45,8 @@ import (
 	"github.com/joelanford/kpm/internal/action"
 	specsv1 "github.com/joelanford/kpm/internal/api/specs/v1"
 	"github.com/joelanford/kpm/internal/bundle"
-	"github.com/joelanford/kpm/internal/fsutil"
 	"github.com/joelanford/kpm/internal/kpm"
+	fsutil "github.com/joelanford/kpm/internal/util/fs"
 )
 
 func BuildCatalog() *cobra.Command {
