@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 
@@ -14,7 +15,7 @@ import (
 func BuildCatalog() *cobra.Command {
 	var (
 		outputDirectory string
-		reportFormat    string
+		reportFile      string
 	)
 	cmd := &cobra.Command{
 		Use:   "catalog <catalogSpecFile>",
@@ -30,16 +31,21 @@ func BuildCatalog() *cobra.Command {
 				cmd.PrintErrf("failed to build catalog: %v\n", err)
 				os.Exit(1)
 			}
+			fmt.Printf("Catalog written to %s with tag %q (digest: %s)\n", res.FilePath, fmt.Sprintf("%s:%s", res.Repository, res.Tag), res.Descriptor.Digest)
 
-			switch reportFormat {
-			case "":
-				fmt.Printf("Catalog written to %s with tag %q (digest: %s)\n", res.FilePath, fmt.Sprintf("%s:%s", res.Repository, res.Tag), res.Descriptor.Digest)
-			case "json":
-				enc := json.NewEncoder(os.Stdout)
+			if reportFile != "" {
+				f, err := os.Create(reportFile)
+				if err != nil {
+					cmd.PrintErrf("failed to create report file: %v\n", err)
+					os.Exit(1)
+				}
+				defer f.Close()
+
+				enc := json.NewEncoder(f)
 				enc.SetIndent("", "  ")
 				enc.SetEscapeHTML(false)
 				if err := enc.Encode(res); err != nil {
-					cmd.PrintErrf("failed to write report for result: %v", err)
+					cmd.PrintErrf("failed to write report for result to %s: %v", reportFile, errors.Join(err, os.Remove(reportFile)))
 					os.Exit(1)
 				}
 			}
@@ -47,7 +53,7 @@ func BuildCatalog() *cobra.Command {
 	}
 	cmd.Flags().StringVarP(&outputDirectory, "output", "o", "",
 		"Output directory (default: current working directory)")
-	cmd.Flags().StringVar(&reportFormat, "report-format", "", "The report format. Default is human-readable text. Options are [json].")
+	cmd.Flags().StringVar(&reportFile, "report-file", "", "Optionally, a file in which to write a JSON report of the build result.")
 	return cmd
 }
 
