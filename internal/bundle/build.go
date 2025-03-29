@@ -2,6 +2,7 @@ package bundle
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"text/template"
 
+	"github.com/blang/semver/v4"
 	"github.com/containers/image/v5/docker/reference"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"sigs.k8s.io/yaml"
@@ -20,36 +22,49 @@ const (
 	MediaTypeOLMOperatorFrameworkRegistryV1 = "olm.operatorframework.io/registry+v1"
 )
 
-func BuildFromSpecFile(specFileName string, filenameFunc func(Bundle) (string, error), bundleHooks ...func(Bundle) error) (string, reference.NamedTagged, ocispec.Descriptor, error) {
+type BuildResult struct {
+	FilePath    string             `json:"filePath"`
+	Repository  string             `json:"imageRepository"`
+	Tag         string             `json:"imageTag"`
+	Descriptor  ocispec.Descriptor `json:"imageDescriptor"`
+	PackageName string             `json:"bundlePackageName"`
+	Version     semver.Version     `json:"bundleVersion"`
+}
+
+func BuildFromSpecFile(_ context.Context, specFileName string, filenameFunc func(Bundle) (string, error)) (*BuildResult, error) {
 	spec, err := ReadSpecFile(specFileName)
 	if err != nil {
-		return "", nil, ocispec.Descriptor{}, fmt.Errorf("failed to read spec: %w", err)
+		return nil, fmt.Errorf("failed to read spec: %w", err)
 	}
 
 	b, err := LoadFromSpec(*spec, filepath.Dir(specFileName))
 	if err != nil {
-		return "", nil, ocispec.Descriptor{}, fmt.Errorf("failed to load registry bundle: %v", err)
-	}
-
-	for _, hook := range bundleHooks {
-		if err := hook(b); err != nil {
-			return "", nil, ocispec.Descriptor{}, fmt.Errorf("failed to apply hooks: %v", err)
-		}
+		return nil, fmt.Errorf("failed to load registry bundle: %v", err)
 	}
 
 	outputFile, err := filenameFunc(b)
 	if err != nil {
-		return "", nil, ocispec.Descriptor{}, fmt.Errorf("failed to generate output file name: %v", err)
+		return nil, fmt.Errorf("failed to generate output file name: %v", err)
 	}
 	imageRef, err := StringFromBundleTemplate(spec.ImageReference)(b)
 	if err != nil {
-		return "", nil, ocispec.Descriptor{}, fmt.Errorf("failed to generate image reference: %v", err)
+		return nil, fmt.Errorf("failed to generate image reference: %v", err)
 	}
 	tagRef, desc, err := BuildFile(outputFile, b, imageRef)
 	if err != nil {
-		return "", nil, ocispec.Descriptor{}, fmt.Errorf("failed to build kpm bundle: %v", err)
+		return nil, fmt.Errorf("failed to build kpm bundle: %v", err)
 	}
-	return outputFile, tagRef, desc, nil
+
+	res := &BuildResult{
+		FilePath:    outputFile,
+		Repository:  reference.TrimNamed(tagRef).String(),
+		Tag:         tagRef.Tag(),
+		Descriptor:  desc,
+		PackageName: b.PackageName(),
+		Version:     b.Version(),
+	}
+
+	return res, nil
 }
 
 func LoadFromSpec(spec specsv1.Bundle, baseDir string) (Bundle, error) {
@@ -72,10 +87,13 @@ func BuildFile(fileName string, b Bundle, imageReference string) (reference.Name
 	if err != nil {
 		return nil, ocispec.Descriptor{}, fmt.Errorf("failed to create output file: %v", err)
 	}
+	defer file.Close()
+
 	tagRef, desc, err := BuildWriter(file, b, imageReference)
 	if err != nil {
 		return nil, ocispec.Descriptor{}, errors.Join(err, os.Remove(fileName))
 	}
+
 	return tagRef, desc, nil
 }
 
