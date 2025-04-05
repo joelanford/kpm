@@ -3,7 +3,6 @@ package bundle
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,6 +15,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	specsv1 "github.com/joelanford/kpm/internal/api/specs/v1"
+	"github.com/joelanford/kpm/internal/kpm"
 )
 
 const (
@@ -31,7 +31,7 @@ type BuildResult struct {
 	Version     semver.Version     `json:"bundleVersion"`
 }
 
-func BuildFromSpecFile(_ context.Context, specFileName string, filenameFunc func(Bundle) (string, error)) (*BuildResult, error) {
+func BuildFromSpecFile(ctx context.Context, specFileName string, filenameFunc func(Bundle) (string, error)) (*BuildResult, error) {
 	spec, err := ReadSpecFile(specFileName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read spec: %w", err)
@@ -39,7 +39,7 @@ func BuildFromSpecFile(_ context.Context, specFileName string, filenameFunc func
 
 	b, err := LoadFromSpec(*spec, filepath.Dir(specFileName))
 	if err != nil {
-		return nil, fmt.Errorf("failed to load registry bundle: %v", err)
+		return nil, fmt.Errorf("failed to load bundle: %v", err)
 	}
 
 	outputFile, err := filenameFunc(b)
@@ -50,7 +50,7 @@ func BuildFromSpecFile(_ context.Context, specFileName string, filenameFunc func
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate image reference: %v", err)
 	}
-	tagRef, desc, err := BuildFile(outputFile, b, imageRef)
+	tagRef, desc, err := kpm.BuildFile(ctx, outputFile, b, imageRef)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build kpm bundle: %v", err)
 	}
@@ -69,46 +69,19 @@ func BuildFromSpecFile(_ context.Context, specFileName string, filenameFunc func
 
 func LoadFromSpec(spec specsv1.Bundle, baseDir string) (Bundle, error) {
 	// Load the bundle
-	bundleDir := filepath.Join(baseDir, spec.BundleRoot)
-	if filepath.IsAbs(spec.BundleRoot) {
-		bundleDir = spec.BundleRoot
+	path := filepath.Join(baseDir, spec.Path)
+	if filepath.IsAbs(spec.Path) {
+		path = spec.Path
 	}
 
 	switch spec.MediaType {
 	case MediaTypeOLMOperatorFrameworkRegistryV1:
-		return NewRegistry(os.DirFS(bundleDir), spec.ExtraAnnotations)
+		return NewRegistry(os.DirFS(path), spec.ExtraAnnotations)
+	case "application/vnd.cncf.helm.chart.v1.tar+gzip":
+		return NewHelm(path, spec.ExtraAnnotations)
 	default:
 		return nil, fmt.Errorf("unsupported media type: %s", spec.MediaType)
 	}
-}
-
-func BuildFile(fileName string, b Bundle, imageReference string) (reference.NamedTagged, ocispec.Descriptor, error) {
-	file, err := os.Create(fileName)
-	if err != nil {
-		return nil, ocispec.Descriptor{}, fmt.Errorf("failed to create output file: %v", err)
-	}
-	defer file.Close()
-
-	tagRef, desc, err := BuildWriter(file, b, imageReference)
-	if err != nil {
-		return nil, ocispec.Descriptor{}, errors.Join(err, os.Remove(fileName))
-	}
-
-	return tagRef, desc, nil
-}
-
-// BuildWriter writes a bundle to a writer
-func BuildWriter(w io.Writer, b Bundle, imageReference string) (reference.NamedTagged, ocispec.Descriptor, error) {
-	tagRef, err := parseTagRef(imageReference)
-	if err != nil {
-		return nil, ocispec.Descriptor{}, fmt.Errorf("failed to get tagged reference from spec file: %w", err)
-	}
-
-	desc, err := b.WriteOCIArchive(w, tagRef)
-	if err != nil {
-		return nil, ocispec.Descriptor{}, fmt.Errorf("failed to write kpm file: %v", err)
-	}
-	return tagRef, desc, nil
 }
 
 func ReadSpecFile(specFileName string) (*specsv1.Bundle, error) {
@@ -135,19 +108,6 @@ func ReadSpec(specReader io.Reader) (*specsv1.Bundle, error) {
 		return nil, fmt.Errorf("unsupported spec API found: %s, expected %s", spec.GroupVersionKind(), expectedGVK)
 	}
 	return &spec, nil
-}
-
-func parseTagRef(imageReference string) (reference.NamedTagged, error) {
-	namedRef, err := reference.ParseNamed(imageReference)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse image reference %q: %v", imageReference, err)
-	}
-
-	tagRef, ok := namedRef.(reference.NamedTagged)
-	if !ok {
-		return nil, fmt.Errorf("image reference %q is not a tagged reference", imageReference)
-	}
-	return tagRef, nil
 }
 
 func StringFromBundleTemplate(tmplStr string) func(b Bundle) (string, error) {

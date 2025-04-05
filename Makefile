@@ -1,22 +1,28 @@
-export VERSION := $(shell git describe --tags --always --dirty)
-
+################
+# Build and test
+################
 export GO_BUILD_ASMFLAGS := all=-trimpath=$(PWD)
 export GO_BUILD_GCFLAGS := all=-trimpath=$(PWD)
 export GO_BUILD_LDFLAGS := -s -w
-export GO_BUILD_TAGS :=
+export GO_BUILD_TAGS := json1
+export CGO_ENABLED := 1
+GO_BUILD_FLAGS := -tags '$(GO_BUILD_TAGS)' -ldflags '$(GO_BUILD_LDFLAGS)' -gcflags '$(GO_BUILD_GCFLAGS)' -asmflags '$(GO_BUILD_ASMFLAGS)'
 
 .PHONY: install
 install:
-	CGO_ENABLED=0 go install .
+	go install $(GO_BUILD_FLAGS) .
 
 .PHONY: build
 build:
-	go build -o bin/kpm .
+	go build $(GO_BUILD_FLAGS) -o bin/kpm .
 
 .PHONY: test
 test:
-	go test ./...
+	CGO_ENABLED=1 go test -race $(GO_BUILD_FLAGS) ./...
 
+##########
+# Release
+##########
 ifeq ($(origin IMAGE_REPO), undefined)
 IMAGE_REPO := ghcr.io/joelanford/kpm
 endif

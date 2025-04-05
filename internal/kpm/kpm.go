@@ -17,6 +17,7 @@ import (
 	"oras.land/oras-go/v2/content"
 	"oras.land/oras-go/v2/content/oci"
 
+	"github.com/joelanford/kpm/internal/ociutil"
 	"github.com/joelanford/kpm/internal/remote"
 	"github.com/joelanford/kpm/internal/tar"
 )
@@ -47,6 +48,11 @@ func Open(ctx context.Context, kpmFilePath string) (*KPM, error) {
 		return nil, fmt.Errorf("failed to read tags: %w", err)
 	}
 
+	tagRef, err := ociutil.ParseNamedTagged(tag)
+	if err != nil {
+		return nil, err
+	}
+
 	desc, err := kpmStore.Resolve(ctx, tag)
 	if err != nil {
 		return nil, fmt.Errorf("kpm artifact not found: %w", err)
@@ -60,21 +66,6 @@ func Open(ctx context.Context, kpmFilePath string) (*KPM, error) {
 	var manifest ocispec.Manifest
 	if err := json.Unmarshal(manifestData, &manifest); err != nil {
 		return nil, fmt.Errorf("failed to decode manifest: %w", err)
-	}
-	refStr, ok := manifest.Annotations[ocispec.AnnotationRefName]
-	if !ok {
-		return nil, fmt.Errorf("missing %q annotation", ocispec.AnnotationRefName)
-	}
-	ref, err := reference.ParseNamed(refStr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse name %q from manifest.Annotations[%q]: %w", refStr, ocispec.AnnotationRefName, err)
-	}
-	tagRef, ok := ref.(reference.NamedTagged)
-	if !ok {
-		return nil, fmt.Errorf("manifest.Annotations[%q]=%q is not a tagged reference", ocispec.AnnotationRefName, refStr)
-	}
-	if tagRef.Tag() != tag {
-		return nil, fmt.Errorf("tag from manifest.Annotations[%q]=%q does not match tag %q from kpm index", ocispec.AnnotationRefName, refStr, tag)
 	}
 
 	return &KPM{

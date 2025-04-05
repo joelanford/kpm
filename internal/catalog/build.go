@@ -35,7 +35,6 @@ import (
 	"github.com/operator-framework/operator-registry/alpha/template/basic"
 	semvertemplate "github.com/operator-framework/operator-registry/alpha/template/semver"
 	"github.com/operator-framework/operator-registry/pkg/cache"
-	"github.com/operator-framework/operator-registry/pkg/containertools"
 	"github.com/operator-framework/operator-registry/pkg/image"
 	"github.com/operator-framework/operator-registry/pkg/registry"
 	"github.com/operator-framework/operator-registry/pkg/sqlite"
@@ -45,6 +44,7 @@ import (
 	"github.com/joelanford/kpm/internal/bundle"
 	"github.com/joelanford/kpm/internal/fsutil"
 	"github.com/joelanford/kpm/internal/kpm"
+	"github.com/joelanford/kpm/internal/ociutil"
 )
 
 // BuildFromSpecFile reads a spec file, builds a kpm catalog from the spec, and writes it to an output file.
@@ -53,11 +53,6 @@ func BuildFromSpecFile(ctx context.Context, specFileName, outputDirectory string
 	spec, err := readCatalogSpec(specFileName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read spec file: %w", err)
-	}
-
-	tagRef, err := parseTagRef(spec.ImageReference)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get tagged reference from spec file: %w", err)
 	}
 
 	if spec.MigrationLevel == "" {
@@ -134,7 +129,11 @@ func BuildFromSpecFile(ctx context.Context, specFileName, outputDirectory string
 	case "json", "pogreb.v1":
 		break // all other cases return within the switch
 	case "none":
-		return writeCatalog(fbcFsys, nil, tagRef, spec.ExtraAnnotations, outputDirectory)
+		cat, err := NewFBC(fbcFsys, nil, spec.ExtraAnnotations)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create new FBC: %w", err)
+		}
+		return writeCatalog(ctx, cat, spec.ImageReference, outputDirectory)
 	default:
 		return nil, fmt.Errorf("unsupported cache format %q", spec.CacheFormat)
 	}
@@ -155,12 +154,13 @@ func BuildFromSpecFile(ctx context.Context, specFileName, outputDirectory string
 	if err := c.Close(); err != nil {
 		return nil, fmt.Errorf("failed to close cache: %w", err)
 	}
-	cacheFsys, err := fsutil.Prefix("/tmp/cache", os.DirFS(tmpCacheDir))
+
+	cat, err := NewFBC(fbcFsys, os.DirFS(tmpCacheDir), spec.ExtraAnnotations)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create cache fs: %v", err)
+		return nil, fmt.Errorf("failed to build catalog: %w", err)
 	}
 
-	return writeCatalog(fbcFsys, cacheFsys, tagRef, spec.ExtraAnnotations, outputDirectory)
+	return writeCatalog(ctx, cat, spec.ImageReference, outputDirectory)
 }
 
 func mapSlice[I, O any](in []I, mapFunc func(I) O) []O {
@@ -178,38 +178,20 @@ type BuildResult struct {
 	Descriptor ocispec.Descriptor `json:"imageDescriptor"`
 }
 
-func writeCatalog(fbcFsys fs.FS, cacheFsys fs.FS, tagRef reference.NamedTagged, extraAnnotations map[string]string, outputDirectory string) (*BuildResult, error) {
-	annotations := make(map[string]string, len(extraAnnotations)+1)
-	maps.Copy(annotations, extraAnnotations)
-	for k, v := range extraAnnotations {
-		annotations[k] = v
-	}
-	annotations[containertools.ConfigsLocationLabel] = "/configs"
-
-	configsFsys, err := fsutil.Prefix("/configs", fbcFsys)
+func writeCatalog(ctx context.Context, catalog Catalog, imageReference string, outputDirectory string) (*BuildResult, error) {
+	tagRef, err := ociutil.ParseNamedTagged(imageReference)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create configs fs: %v", err)
-	}
-	layers := []fs.FS{configsFsys}
-	if cacheFsys != nil {
-		layers = append(layers, cacheFsys)
+		return nil, fmt.Errorf("failed to get tagged reference from spec file: %w", err)
 	}
 
 	// Open output file for writing
 	pathParts := strings.Split(reference.Path(reference.TrimNamed(tagRef)), "/")
 	baseName := pathParts[len(pathParts)-1]
 	outputFile := filepath.Join(outputDirectory, fmt.Sprintf("%s-%s.catalog.kpm", baseName, tagRef.Tag()))
-	kpmFile, err := os.Create(outputFile)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create output file: %v", err)
-	}
 
-	// Write it!
-	desc, err := kpm.WriteImageManifest(kpmFile, tagRef, layers, annotations)
+	_, desc, err := kpm.BuildFile(ctx, outputFile, catalog, tagRef.String())
 	if err != nil {
-		// Clean up the file if we failed to write it
-		_ = os.Remove(outputFile)
-		return nil, fmt.Errorf("failed to write kpm file: %v", err)
+		return nil, fmt.Errorf("failed to build catalog: %w", err)
 	}
 
 	res := BuildResult{
@@ -236,19 +218,6 @@ func readCatalogSpec(specFile string) (*specsv1.Catalog, error) {
 		return nil, fmt.Errorf("unsupported spec API found: %s, expected %s", spec.GroupVersionKind(), expectedGVK)
 	}
 	return &spec, nil
-}
-
-func parseTagRef(imageReference string) (reference.NamedTagged, error) {
-	namedRef, err := reference.ParseNamed(imageReference)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse image reference %q: %v", imageReference, err)
-	}
-
-	tagRef, ok := namedRef.(reference.NamedTagged)
-	if !ok {
-		return nil, fmt.Errorf("image reference %q is not a tagged reference", imageReference)
-	}
-	return tagRef, nil
 }
 
 // renderBundlesDir reads bundle files recursively from a directory, generates a catalog, and writes it to an output file.
@@ -416,14 +385,14 @@ func renderLegacyBundlesDir(ctx context.Context, bundleRoot, bundleImageReferenc
 		return nil, err
 	}
 	if isPkgManDir {
-		err = populateFromLegacyPackageManifestDir(loader, bundleRoot, bundleImageReference, outputDirectory)
+		err = populateFromLegacyPackageManifestDir(ctx, loader, bundleRoot, bundleImageReference, outputDirectory)
 	} else {
 		var graphLoader registry.GraphLoader
 		graphLoader, err = sqlite.NewSQLGraphLoaderFromDB(db)
 		if err != nil {
 			return nil, err
 		}
-		err = populateFromLegacyBundlesDirectory(loader, querier, graphLoader, bundleRoot, bundleImageReference, outputDirectory)
+		err = populateFromLegacyBundlesDirectory(ctx, loader, querier, graphLoader, bundleRoot, bundleImageReference, outputDirectory)
 	}
 	if err != nil {
 		return nil, err
@@ -498,7 +467,7 @@ func readPackageManifestsFile(bundleRoot string) (*registry.PackageManifest, []s
 	return nil, nil, nil
 }
 
-func populateFromLegacyPackageManifestDir(loader registry.Load, bundleRoot, bundleImageReference, outputDirectory string) error {
+func populateFromLegacyPackageManifestDir(ctx context.Context, loader registry.Load, bundleRoot, bundleImageReference, outputDirectory string) error {
 	pm, bundleDirs, err := readPackageManifestsFile(bundleRoot)
 	if err != nil {
 		return err
@@ -536,7 +505,7 @@ func populateFromLegacyPackageManifestDir(loader registry.Load, bundleRoot, bund
 			return err
 		}
 
-		if _, _, _, err = buildBundle(b, bundleImageReference, outputDirectory); err != nil {
+		if _, _, _, err = buildBundle(ctx, b, bundleImageReference, outputDirectory); err != nil {
 			return err
 		}
 	}
@@ -545,7 +514,7 @@ func populateFromLegacyPackageManifestDir(loader registry.Load, bundleRoot, bund
 	return dl.Populate()
 }
 
-func populateFromLegacyBundlesDirectory(loader registry.Load, querier registry.Query, graphLoader registry.GraphLoader, bundleRoot, bundleImageReference, outputDirectory string) error {
+func populateFromLegacyBundlesDirectory(ctx context.Context, loader registry.Load, querier registry.Query, graphLoader registry.GraphLoader, bundleRoot, bundleImageReference, outputDirectory string) error {
 	updateGraphMode, err := getLegacyUpdateGraphMode(bundleRoot)
 	if err != nil {
 		return err
@@ -573,7 +542,7 @@ func populateFromLegacyBundlesDirectory(loader registry.Load, querier registry.Q
 		if err != nil {
 			return err
 		}
-		_, tagRef, desc, err := buildBundle(b, bundleImageReference, outputDirectory)
+		_, tagRef, desc, err := buildBundle(ctx, b, bundleImageReference, outputDirectory)
 		if err != nil {
 			return err
 		}
@@ -649,13 +618,13 @@ func populateFromLegacyBundlesDirectory(loader registry.Load, querier registry.Q
 	)
 }
 
-func buildBundle(b bundle.Bundle, bundleImageReference string, outputDirectory string) (string, reference.NamedTagged, ocispec.Descriptor, error) {
+func buildBundle(ctx context.Context, b bundle.Bundle, bundleImageReference string, outputDirectory string) (string, reference.NamedTagged, ocispec.Descriptor, error) {
 	outputFile := filepath.Join(outputDirectory, fmt.Sprintf("%s-%s.bundle.kpm", b.PackageName(), b.Version()))
 	imageRef, err := bundle.StringFromBundleTemplate(bundleImageReference)(b)
 	if err != nil {
 		return "", nil, ocispec.Descriptor{}, err
 	}
-	tagRef, desc, err := bundle.BuildFile(outputFile, b, imageRef)
+	tagRef, desc, err := kpm.BuildFile(ctx, outputFile, b, imageRef)
 	if err != nil {
 		return "", nil, ocispec.Descriptor{}, err
 	}

@@ -13,6 +13,6 @@ type Bundle struct {
 
 	MediaType        string            `json:"mediaType"`
 	ImageReference   string            `json:"imageReference"`
-	BundleRoot       string            `json:"bundleRoot"`
+	Path             string            `json:"path"`
 	ExtraAnnotations map[string]string `json:"extraAnnotations,omitempty"`
 }

@@ -1,22 +1,27 @@
 package bundle
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
+	"os"
+	"path/filepath"
+	"testing/fstest"
 
 	"github.com/blang/semver/v4"
-	"github.com/containers/image/v5/docker/reference"
+	"github.com/containers/storage/pkg/archive"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"golang.org/x/exp/maps"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"oras.land/oras-go/v2/content"
 	"sigs.k8s.io/yaml"
 
 	"github.com/joelanford/kpm/internal/kpm"
 )
 
-type registry struct {
+type registryV1 struct {
 	root fs.FS
 
 	packageName string
@@ -25,7 +30,7 @@ type registry struct {
 }
 
 func NewRegistry(root fs.FS, extraAnnotations map[string]string) (Bundle, error) {
-	b := &registry{root: root}
+	b := &registryV1{root: root}
 	if extraAnnotations != nil {
 		b.annotations = make(map[string]string, len(extraAnnotations))
 		maps.Copy(b.annotations, extraAnnotations)
@@ -39,24 +44,83 @@ func NewRegistry(root fs.FS, extraAnnotations map[string]string) (Bundle, error)
 	return b, nil
 }
 
-func (b *registry) FS() fs.FS {
-	return b.root
-}
-
-func (b *registry) PackageName() string {
+func (b *registryV1) PackageName() string {
 	return b.packageName
 }
 
-func (b *registry) Version() semver.Version {
+func (b *registryV1) Version() semver.Version {
 	return b.version
 }
 
-func (b *registry) Annotations() map[string]string {
+func (b *registryV1) Annotations() map[string]string {
 	return b.annotations
 }
 
-func (b *registry) WriteOCIArchive(w io.Writer, name reference.NamedTagged) (ocispec.Descriptor, error) {
-	return kpm.WriteImageManifest(w, name, []fs.FS{b.root}, b.annotations)
+func (b *registryV1) MarshalOCI(ctx context.Context, pusher content.Pusher) (ocispec.Descriptor, error) {
+	return kpm.MarshalOCIManifest(ctx, pusher, []fs.FS{b.root}, b.annotations)
+}
+
+func (b *registryV1) UnmarshalOCI(ctx context.Context, fetcher content.Fetcher, desc ocispec.Descriptor) error {
+	manifestData, err := content.FetchAll(ctx, fetcher, desc)
+	if err != nil {
+		return err
+	}
+	var manifest ocispec.Manifest
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		return err
+	}
+
+	tmpDir, err := os.MkdirTemp("", "kpm-unmarshal-fs")
+	for _, layer := range manifest.Layers {
+		if err := func() error {
+			lr, err := fetcher.Fetch(ctx, layer)
+			if err != nil {
+				return err
+			}
+			defer lr.Close()
+			vr := content.NewVerifyReader(lr, layer)
+			_, err = archive.ApplyLayer(tmpDir, vr)
+			return err
+		}(); err != nil {
+			return errors.Join(err, os.RemoveAll(tmpDir))
+		}
+	}
+
+	vfs := fstest.MapFS{}
+	if err := filepath.WalkDir(tmpDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		fi, err := d.Info()
+		if err != nil {
+			return err
+		}
+		vfs[path] = &fstest.MapFile{
+			Mode:    fi.Mode(),
+			ModTime: fi.ModTime(),
+			Sys:     fi.Sys(),
+		}
+		if d.IsDir() {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		vfs[path].Data = data
+		return nil
+	}); err != nil {
+		return err
+	}
+	b.root = vfs
+	if err := b.parseMetadata(); err != nil {
+		return err
+	}
+	if err := b.parseManifests(); err != nil {
+		return err
+	}
+	b.annotations = manifest.Annotations
+	return nil
 }
 
 const (
@@ -66,7 +130,7 @@ const (
 	packageNameKey     = "operators.operatorframework.io.bundle.package.v1"
 )
 
-func (b *registry) parseMetadata() error {
+func (b *registryV1) parseMetadata() error {
 	// read annotations file
 	annotationsData, err := fs.ReadFile(b.root, annotationsFile)
 	if err != nil {
@@ -110,7 +174,7 @@ func (b *registry) parseMetadata() error {
 	return nil
 }
 
-func (b *registry) parseManifests() error {
+func (b *registryV1) parseManifests() error {
 	manifestsEntries, err := fs.ReadDir(b.root, manifestsDirectory)
 	if err != nil {
 		return fmt.Errorf("failed to read directory %q: %w", b.root, err)

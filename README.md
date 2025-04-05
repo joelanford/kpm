@@ -21,7 +21,7 @@ go install github.com/joelanford/kpm@latest
    apiVersion: specs.kpm.io/v1
    kind: Bundle
    imageReference: quay.io/joelanford/{.PackageName}-bundle:v{.Version}
-   bundleRoot: ./my-olm-package/0.0.1
+   path: ./my-olm-package/0.0.1
    EOF
 
    $ kpm build bundle bundle.kpmspec.yaml
