@@ -31,13 +31,14 @@ func main() {
 			if err := json.Unmarshal(graphData, &g); err != nil {
 				return err
 			}
+			idx := graph.NewIndexFromGraph(&g)
 
 			if filter != "" {
 				f, err := graph.ParseSelector(filter)
 				if err != nil {
 					return err
 				}
-				if err := f.Apply(cmd.Context(), &g); err != nil {
+				if err := f.Apply(cmd.Context(), idx); err != nil {
 					return err
 				}
 			}

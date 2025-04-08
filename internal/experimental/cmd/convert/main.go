@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"strings"
 
@@ -20,8 +19,9 @@ func main() {
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
+			cmd.SilenceErrors = true
 
-			fbcs := make(map[string]declcfg.DeclarativeConfig, len(args))
+			idx := graph.NewIndex()
 			for _, arg := range args {
 				dist, fbcDir, ok := strings.Cut(arg, ":")
 				if !ok {
@@ -31,20 +31,18 @@ func main() {
 				if err != nil {
 					return fmt.Errorf("loading declarative config: %w", err)
 				}
-				fbcs[dist] = *fbc
-			}
-
-			g, err := graph.FromFBC(fbcs)
-			if err != nil {
-				return err
+				if err := idx.AddFBC(*fbc, map[string][]string{"dist": {dist}}); err != nil {
+					return fmt.Errorf("adding FBC: %w", err)
+				}
 			}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
 			enc.SetEscapeHTML(false)
-			return enc.Encode(g)
+			return enc.Encode(idx.Graph())
 		},
 	}
 	if err := cmd.Execute(); err != nil {
-		log.Fatal(err)
+		fmt.Fprintf(os.Stderr, "ERROR: %s\n", err)
+		os.Exit(1)
 	}
 }
