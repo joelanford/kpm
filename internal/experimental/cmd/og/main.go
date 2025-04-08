@@ -40,6 +40,7 @@ func newRootCmd() *cobra.Command {
 	rootCmd.AddCommand(
 		newAddCmd(),
 		newTagCmd(),
+		newQueryCmd(),
 	)
 
 	return rootCmd
@@ -263,6 +264,59 @@ func newTagCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&graphDir, "graph-dir", "g", ".", "Graph directory")
+	return cmd
+}
+
+func newQueryCmd() *cobra.Command {
+	var (
+		graphDir string
+		filter   string
+		output   string
+	)
+	cmd := &cobra.Command{
+		Use:  "query",
+		Args: cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			cmd.SilenceUsage = true
+
+			idx, err := openIndex(graphDir, true)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+
+			if filter != "" {
+				f, err := graph.ParseSelector(filter)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					os.Exit(1)
+				}
+				if err := f.Apply(cmd.Context(), idx); err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					os.Exit(1)
+				}
+			}
+
+			switch output {
+			case "json":
+				err = write.JSON(os.Stdout, idx.Graph())
+			case "mermaid":
+				err = write.Mermaid(os.Stdout, idx.Graph())
+			case "mermaidurl":
+				err = write.MermaidURL(os.Stdout, idx.Graph())
+			default:
+				fmt.Fprintf(os.Stderr, "unknown output format %q", output)
+				os.Exit(1)
+			}
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+		},
+	}
+	cmd.Flags().StringVarP(&graphDir, "graph-dir", "g", ".", "Graph directory")
+	cmd.Flags().StringVarP(&filter, "filter", "f", "", "tag-based CEL expression filter to apply to the graph")
+	cmd.Flags().StringVarP(&output, "output", "o", "json", "output format (one of: [json,mermaid,mermaidurl])")
 	return cmd
 }
 
