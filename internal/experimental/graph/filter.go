@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/google/cel-go/common/types"
 	"github.com/opencontainers/go-digest"
 
+	graphv1 "github.com/joelanford/kpm/internal/experimental/api/graph/v1"
 	"github.com/joelanford/kpm/internal/experimental/api/graph/v1/pb"
 )
 
@@ -56,14 +58,9 @@ func ParseSelector(in string) (*Selector, error) {
 	}, nil
 }
 
-func getEntryTags(tags map[digest.Digest]map[string][]string, dgst digest.Digest) map[string]*pb.TagValues {
-	itemTags, ok := tags[dgst]
-	if !ok {
-		return nil
-	}
-
+func tagMapToEntryTags(m map[string][]string) map[string]*pb.TagValues {
 	entryTags := make(map[string]*pb.TagValues)
-	for k, values := range itemTags {
+	for k, values := range m {
 		vals := &pb.TagValues{}
 		for _, v := range values {
 			vals.Values = append(vals.Values, v)
@@ -73,34 +70,69 @@ func getEntryTags(tags map[digest.Digest]map[string][]string, dgst digest.Digest
 	return entryTags
 }
 
+func (f *Selector) MatchNode(ctx context.Context, g *graphv1.Graph, dgst digest.Digest) (bool, error) {
+	n, ok := g.Nodes[dgst]
+	if !ok {
+		return false, errors.New("node not found")
+	}
+	env := map[string]any{
+		"entry": &pb.Entry{
+			Tags: tagMapToEntryTags(g.Tags[dgst]),
+			Kind: &pb.Entry_Node{Node: &pb.Node{
+				Name:    n.Name,
+				Version: n.Version.String(),
+				Release: n.Release,
+			}},
+		},
+	}
+	out, _, err := f.Expression.ContextEval(ctx, env)
+	if err != nil {
+		return false, err
+	}
+	return out.Value().(bool), nil
+}
+
+func (f *Selector) MatchEdge(ctx context.Context, g *graphv1.Graph, dgst digest.Digest) (bool, error) {
+	e, ok := g.Edges[dgst]
+	if !ok {
+		return false, errors.New("edge not found")
+	}
+
+	from := g.Nodes[e.From].NVR
+	to := g.Nodes[e.To].NVR
+
+	env := map[string]any{
+		"entry": &pb.Entry{
+			Tags: tagMapToEntryTags(g.Tags[dgst]),
+			Kind: &pb.Entry_Edge{Edge: &pb.Edge{
+				From: &pb.Node{
+					Name:    from.Name,
+					Version: from.Version.String(),
+					Release: from.Release,
+				},
+				To: &pb.Node{
+					Name:    to.Name,
+					Version: to.Version.String(),
+					Release: to.Release,
+				},
+			}},
+		},
+	}
+	out, _, err := f.Expression.ContextEval(ctx, env)
+	if err != nil {
+		return false, err
+	}
+	return out.Value().(bool), nil
+}
+
 func (f *Selector) Apply(ctx context.Context, i *Index) error {
 	refNodes := map[digest.Digest]struct{}{}
 	for dgst, edge := range i.graph.Edges {
-		from := i.graph.Nodes[edge.From].NVR
-		to := i.graph.Nodes[edge.To].NVR
-
-		env := map[string]any{
-			"entry": &pb.Entry{
-				Tags: getEntryTags(i.graph.Tags, dgst),
-				Kind: &pb.Entry_Edge{Edge: &pb.Edge{
-					From: &pb.Node{
-						Name:    from.Name,
-						Version: from.Version.String(),
-						Release: from.Release,
-					},
-					To: &pb.Node{
-						Name:    to.Name,
-						Version: to.Version.String(),
-						Release: to.Release,
-					},
-				}},
-			},
-		}
-		out, _, err := f.Expression.ContextEval(ctx, env)
+		match, err := f.MatchEdge(ctx, i.graph, dgst)
 		if err != nil {
 			return err
 		}
-		if out.Value().(bool) {
+		if match {
 			refNodes[edge.From] = struct{}{}
 			refNodes[edge.To] = struct{}{}
 		} else {
@@ -110,21 +142,11 @@ func (f *Selector) Apply(ctx context.Context, i *Index) error {
 	}
 
 	for dgst, node := range i.graph.Nodes {
-		env := map[string]any{
-			"entry": &pb.Entry{
-				Tags: getEntryTags(i.graph.Tags, dgst),
-				Kind: &pb.Entry_Node{Node: &pb.Node{
-					Name:    node.Name,
-					Version: node.Version.String(),
-					Release: node.Release,
-				}},
-			},
-		}
-		out, _, err := f.Expression.ContextEval(ctx, env)
+		match, err := f.MatchNode(ctx, i.graph, dgst)
 		if err != nil {
 			return err
 		}
-		if !out.Value().(bool) {
+		if !match {
 			delete(i.graph.Nodes, dgst)
 			delete(i.graph.Tags, dgst)
 			i.nvrToNodes[node.NVR] = slices.DeleteFunc(i.nvrToNodes[node.NVR], func(d digest.Digest) bool {

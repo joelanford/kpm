@@ -3,14 +3,15 @@ module github.com/joelanford/kpm
 go 1.24.2
 
 require (
-	cel.dev/expr v0.15.0
 	github.com/Masterminds/semver/v3 v3.2.1
 	github.com/blang/semver/v4 v4.0.0
 	github.com/containers/image/v5 v5.32.2
 	github.com/dschmidt/go-layerfs v0.2.0
 	github.com/go-sprout/sprout v0.6.0
+	github.com/gogo/protobuf v1.3.2
 	github.com/google/cel-go v0.20.1
 	github.com/google/go-containerregistry v0.20.0
+	github.com/google/renameio v0.1.0
 	github.com/mattn/go-sqlite3 v1.14.22
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.0
@@ -20,6 +21,7 @@ require (
 	github.com/spf13/cobra v1.8.1
 	golang.org/x/exp v0.0.0-20240719175910-8a7402abbf56
 	golang.org/x/sync v0.8.0
+	google.golang.org/protobuf v1.36.6
 	helm.sh/helm/v3 v3.15.4
 	k8s.io/apimachinery v0.31.0
 	oras.land/oras-go/v2 v2.5.0
@@ -179,7 +181,6 @@ require (
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1 // indirect
 	github.com/go-viper/mapstructure/v2 v2.2.1 // indirect
 	github.com/gobwas/glob v0.2.3 // indirect
-	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang-jwt/jwt/v4 v4.5.0 // indirect
 	github.com/golang-jwt/jwt/v5 v5.2.1 // indirect
 	github.com/golang-migrate/migrate/v4 v4.17.1 // indirect
@@ -361,8 +362,6 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20240528184218-531527333157 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240701130421-f6361c86f094 // indirect
 	google.golang.org/grpc v1.65.0 // indirect
-	google.golang.org/grpc/cmd/protoc-gen-go-grpc v1.5.1 // indirect
-	google.golang.org/protobuf v1.36.6 // indirect
 	gopkg.in/alexcesaro/quotedprintable.v3 v3.0.0-20150716171945-2caba252f4dc // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
