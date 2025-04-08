@@ -4,117 +4,188 @@ import (
 	"context"
 	"fmt"
 	"maps"
-	"strings"
 
+	"github.com/gogo/protobuf/proto"
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/checker/decls"
 	"github.com/google/cel-go/common/types"
 	"github.com/opencontainers/go-digest"
 
 	graphv1 "github.com/joelanford/kpm/internal/experimental/api/graph/v1"
+	"github.com/joelanford/kpm/internal/experimental/api/graph/v1/pb"
 )
 
-func ParseFilter(in string) (*TagSelector, error) {
-	scope, celExpression, ok := strings.Cut(in, ":")
-	if !ok {
-		return nil, fmt.Errorf(`invalid filter %q: format is <scope>:<key>=<value>`, in)
-	}
+type Selector struct {
+	Expression cel.Program
+}
 
-	envOpts := []cel.EnvOption{
-		cel.Declarations(
-			decls.NewVar("tag", decls.NewMapType(decls.String, decls.String)),
-		),
-	}
-
+func compileExpression(expr string, envOpts []cel.EnvOption) (cel.Program, error) {
 	e, err := cel.NewEnv(envOpts...)
 	if err != nil {
 		return nil, err
 	}
-	ast, issues := e.Compile(celExpression)
+	ast, issues := e.Compile(expr)
 	if issues != nil && issues.Err() != nil {
 		return nil, issues.Err()
 	}
 
 	if !ast.OutputType().IsExactType(types.BoolType) {
-		return nil, fmt.Errorf(`invalid filter %q: output type is %s, expected bool`, in, ast.OutputType().String())
+		return nil, fmt.Errorf(`invalid expression %q: output type is %s, expected bool`, expr, ast.OutputType().String())
 	}
 
 	prg, err := e.Program(ast, cel.InterruptCheckFrequency(1024))
 	if err != nil {
 		return nil, err
 	}
+	return prg, nil
+}
 
-	return &TagSelector{
-		Scope:      scope,
+func ParseSelector(in string) (*Selector, error) {
+	envOpts := []cel.EnvOption{
+		cel.Types(proto.Message(&pb.Entry{})),
+		cel.Declarations(
+			decls.NewVar("entry", decls.NewObjectType("pb.Entry")),
+		),
+	}
+	prg, err := compileExpression(in, envOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Selector{
 		Expression: prg,
 	}, nil
 }
 
-type TagSelector struct {
-	Scope      string
-	Expression cel.Program
-}
+func (f *Selector) Apply(ctx context.Context, g *graphv1.Graph) error {
+	nodeTags := make(map[digest.Digest]map[string]*pb.TagValues)
+	edgeTags := make(map[digest.Digest]map[string]*pb.TagValues)
 
-func (f *TagSelector) Apply(ctx context.Context, g *graphv1.Graph) error {
-	keepDigests := map[digest.Digest]struct{}{}
+	keepNodes := make(map[digest.Digest]struct{}, len(g.Nodes))
+	keepEdges := make(map[digest.Digest]struct{}, len(g.Edges))
+	for d := range g.Nodes {
+		keepNodes[d] = struct{}{}
+	}
+	for d := range g.Edges {
+		keepEdges[d] = struct{}{}
+	}
+
 	for _, tag := range g.Tags {
-		if f.Scope == tag.Scope || f.Scope == "*" {
-			env := map[string]any{
-				"tag": map[string]string{
-					tag.Key: tag.Value,
-				},
+		switch tag.Scope {
+		case graphv1.ScopeNode:
+			tags, ok := nodeTags[tag.Reference]
+			if !ok {
+				tags = make(map[string]*pb.TagValues)
 			}
-			out, _, err := f.Expression.ContextEval(ctx, env)
-			if err != nil {
-				return err
+			vals, ok := tags[tag.Key]
+			if !ok {
+				vals = &pb.TagValues{}
 			}
-			if out.Value().(bool) {
-				keepDigests[tag.Reference] = struct{}{}
+			vals.Values = append(vals.Values, tag.Value)
+			tags[tag.Key] = vals
+			nodeTags[tag.Reference] = tags
+		case graphv1.ScopeEdge:
+			tags, ok := edgeTags[tag.Reference]
+			if !ok {
+				tags = make(map[string]*pb.TagValues)
 			}
+			vals, ok := tags[tag.Key]
+			if !ok {
+				vals = &pb.TagValues{}
+			}
+			vals.Values = append(vals.Values, tag.Value)
+			tags[tag.Key] = vals
+			edgeTags[tag.Reference] = tags
 		}
 	}
 
-	deleteUnusedMetadata(g, f.Scope, keepDigests)
+	for nodeDigest, tags := range nodeTags {
+		nvr := g.Nodes[nodeDigest].NVR
+		env := map[string]any{
+			"entry": &pb.Entry{
+				Tags: tags,
+				Kind: &pb.Entry_Node{Node: &pb.Node{
+					Name:    nvr.Name,
+					Version: nvr.Version.String(),
+					Release: nvr.Release,
+				}},
+			},
+		}
+		out, _, err := f.Expression.ContextEval(ctx, env)
+		if err != nil {
+			return err
+		}
+		if !out.Value().(bool) {
+			delete(keepNodes, nodeDigest)
+		}
+	}
+	for edgeDigest, tags := range edgeTags {
+		edge := g.Edges[edgeDigest]
+		from := g.Nodes[edge.From].NVR
+		to := g.Nodes[edge.To].NVR
+
+		env := map[string]any{
+			"entry": &pb.Entry{
+				Tags: tags,
+				Kind: &pb.Entry_Edge{Edge: &pb.Edge{
+					From: &pb.Node{
+						Name:    from.Name,
+						Version: from.Version.String(),
+						Release: from.Release,
+					},
+					To: &pb.Node{
+						Name:    to.Name,
+						Version: to.Version.String(),
+						Release: to.Release,
+					},
+				}},
+			},
+		}
+		out, _, err := f.Expression.ContextEval(ctx, env)
+		if err != nil {
+			return err
+		}
+		if !out.Value().(bool) {
+			delete(keepEdges, edgeDigest)
+		}
+	}
+
+	deleteUnusedMetadata(g, keepNodes, keepEdges)
 	return nil
 }
 
-func deleteUnusedMetadata(g *graphv1.Graph, scope string, keepDigests map[digest.Digest]struct{}) {
-	nodeScope := scope == graphv1.ScopeNode || scope == "*"
-	edgeScope := scope == graphv1.ScopeEdge || scope == "*"
-
+func deleteUnusedMetadata(g *graphv1.Graph, keepNodes, keepEdges map[digest.Digest]struct{}) {
 	referencedNodes := map[digest.Digest]struct{}{}
-	if edgeScope {
-		// Delete non-matching edges
-		maps.DeleteFunc(g.Edges, func(digest digest.Digest, edge graphv1.Edge) bool {
-			_, keep := keepDigests[digest]
-			if keep {
-				referencedNodes[edge.From] = struct{}{}
-				referencedNodes[edge.To] = struct{}{}
-			}
-			return !keep
-		})
-	}
 
-	if nodeScope {
-		// Move non-matching nodes to "ReferenceOnlyNodes"
-		for nodeDigest, node := range g.Nodes {
-			if _, keep := keepDigests[nodeDigest]; !keep {
-				delete(g.Nodes, nodeDigest)
-				if _, referenced := referencedNodes[nodeDigest]; referenced {
-					if g.ReferenceOnlyNodes == nil {
-						g.ReferenceOnlyNodes = map[digest.Digest]graphv1.Node{}
-					}
-					g.ReferenceOnlyNodes[nodeDigest] = node
+	// Delete non-matching edges, otherwise track referenced nodes.
+	maps.DeleteFunc(g.Edges, func(edgeDigest digest.Digest, edge graphv1.Edge) bool {
+		_, keep := keepEdges[edgeDigest]
+		if keep {
+			referencedNodes[edge.From] = struct{}{}
+			referencedNodes[edge.To] = struct{}{}
+		}
+		return !keep
+	})
+
+	// Delete non-matching nodes (or move them to ReferenceOnlyNodes if still referenced by edges)
+	for nodeDigest, node := range g.Nodes {
+		if _, keep := keepNodes[nodeDigest]; !keep {
+			delete(g.Nodes, nodeDigest)
+			if _, referenced := referencedNodes[nodeDigest]; referenced {
+				if g.ReferenceOnlyNodes == nil {
+					g.ReferenceOnlyNodes = map[digest.Digest]graphv1.Node{}
 				}
+				g.ReferenceOnlyNodes[nodeDigest] = node
 			}
 		}
 	}
 
 	// Delete node tags matching the scope that now have 0 matches
 	maps.DeleteFunc(g.Tags, func(_ digest.Digest, tag graphv1.Tag) bool {
-		inScope := scope == tag.Scope || scope == "*"
+		nodeScope := tag.Scope == graphv1.ScopeNode
+		edgeScope := tag.Scope == graphv1.ScopeEdge
 		_, foundNode := g.Nodes[tag.Reference]
 		_, foundEdge := g.Edges[tag.Reference]
-		return inScope && !foundNode && !foundEdge
+		return !(foundNode && nodeScope) && !(foundEdge && edgeScope)
 	})
 }

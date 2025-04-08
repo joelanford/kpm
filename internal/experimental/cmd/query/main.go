@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 
@@ -32,7 +33,7 @@ func main() {
 			}
 
 			if filter != "" {
-				f, err := graph.ParseFilter(filter)
+				f, err := graph.ParseSelector(filter)
 				if err != nil {
 					return err
 				}
@@ -46,12 +47,16 @@ func main() {
 				err = write.JSON(os.Stdout, &g)
 			case "mermaid":
 				err = write.Mermaid(os.Stdout, &g)
+			case "mermaidurl":
+				err = write.MermaidURL(os.Stdout, &g)
+			default:
+				return fmt.Errorf("unknown output format %q", output)
 			}
 			return err
 		},
 	}
 	cmd.Flags().StringVar(&filter, "filter", "", "tag-based CEL expression filter to apply to the graph")
-	cmd.Flags().StringVarP(&output, "output", "o", "json", "output format (one of: [json,mermaid])")
+	cmd.Flags().StringVarP(&output, "output", "o", "json", "output format (one of: [json,mermaid,mermaidurl])")
 	if err := cmd.Execute(); err != nil {
 		log.Fatal(err)
 	}

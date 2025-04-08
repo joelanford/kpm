@@ -5,12 +5,16 @@ export GO_BUILD_GCFLAGS := all=-trimpath=$(PWD)
 export GO_BUILD_LDFLAGS := -s -w
 export GO_BUILD_TAGS :=
 
+.PHONY: generate
+generate:
+	protoc --plugin=protoc-gen-go=$(shell go tool -n google.golang.org/protobuf/cmd/protoc-gen-go) --go_out=./internal/experimental/api/graph/v1/ ./internal/experimental/api/graph/v1/entry.proto
+
 .PHONY: install
-install:
+install: generate
 	CGO_ENABLED=0 go install .
 
 .PHONY: build
-build:
+build: generate
 	go build -o bin/kpm .
 
 .PHONY: test
@@ -38,5 +42,5 @@ endif
 export GORELEASER_ARGS
 
 .PHONY: release
-release:
+release: generate
 	go tool goreleaser release $(GORELEASER) $(GORELEASER_ARGS)

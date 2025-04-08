@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 
 	mmsemver "github.com/Masterminds/semver/v3"
@@ -17,115 +18,98 @@ import (
 	graphv1 "github.com/joelanford/kpm/internal/experimental/api/graph/v1"
 )
 
-func FromFBC(fbc declcfg.DeclarativeConfig) (*graphv1.Graph, error) {
+func FromFBC(fbcs map[string]declcfg.DeclarativeConfig) (*graphv1.Graph, error) {
 	graph := &graphv1.Graph{
 		MediaType: graphv1.MediaTypeGraph,
 		Nodes:     make(map[digest.Digest]graphv1.Node),
 		Edges:     make(map[digest.Digest]graphv1.Edge),
 		Tags:      make(map[digest.Digest]graphv1.Tag),
 	}
-	xBundles, err := convertBundles(fbc.Bundles)
-	if err != nil {
-		return nil, err
-	}
-
-	for _, pkgBundles := range xBundles {
-		for _, b := range pkgBundles {
-			graph.Nodes[b.digest] = *b.graph
+	for dist, fbc := range fbcs {
+		xBundles, err := convertBundles(fbc.Bundles)
+		if err != nil {
+			return nil, err
 		}
-	}
 
-	for _, ch := range fbc.Channels {
-		pkgBundles := xBundles[ch.Package]
-		bundlesByName := map[string]*xBundle{}
-		bundlesByVersion := map[mmsemver.Version]*xBundle{}
-		for i, b := range pkgBundles {
-			bundlesByName[b.fbc.Name] = &pkgBundles[i]
-			bundlesByVersion[b.graph.Version] = &pkgBundles[i]
+		for _, pkgBundles := range xBundles {
+			for _, b := range pkgBundles {
+				graph.Nodes[b.digest] = *b.graph
+
+				tagDigest, tag := newTag(graphv1.ScopeNode, "dist", dist, b.digest)
+				graph.Tags[tagDigest] = tag
+			}
 		}
-		for _, entry := range ch.Entries {
-			entryBundle, ok := bundlesByName[entry.Name]
-			if !ok {
-				return nil, fmt.Errorf("bundle %q not found", entry.Name)
+
+		for _, ch := range fbc.Channels {
+			pkgBundles := xBundles[ch.Package]
+			bundlesByName := map[string]*xBundle{}
+			bundlesByVersion := map[mmsemver.Version]*xBundle{}
+			for i, b := range pkgBundles {
+				bundlesByName[b.fbc.Name] = &pkgBundles[i]
+				bundlesByVersion[b.graph.Version] = &pkgBundles[i]
 			}
-			entryTag := graphv1.Tag{
-				MediaType: graphv1.MediaTypeTag,
-				Scope:     graphv1.ScopeNode,
-				Key:       "channel",
-				Value:     ch.Name,
-				Reference: entryBundle.digest,
-			}
-			entryTagDigest := digestOf(entryTag)
-			graph.Tags[entryTagDigest] = entryTag
-			if entry.Replaces != "" {
-				replacedBundle, ok := bundlesByName[entry.Replaces]
+			for _, entry := range ch.Entries {
+				entryBundle, ok := bundlesByName[entry.Name]
 				if !ok {
-					return nil, fmt.Errorf("bundle %q not found", entry.Replaces)
+					return nil, fmt.Errorf("bundle %q not found", entry.Name)
 				}
-				edge := graphv1.Edge{
-					MediaType: graphv1.MediaTypeEdge,
-					From:      replacedBundle.digest,
-					To:        entryBundle.digest,
+
+				entryTagDigest, entryTag := newTag(graphv1.ScopeNode, "channel", ch.Name, entryBundle.digest)
+				graph.Tags[entryTagDigest] = entryTag
+
+				if entry.Replaces != "" {
+					replacedBundle, ok := bundlesByName[entry.Replaces]
+					if !ok {
+						_, _ = fmt.Fprintf(os.Stderr, "WARNING: skipping edge creation for unknown bundle %q for entry %q in channel %q in dist %q\n", entry.Replaces, entry.Name, ch.Name, dist)
+						continue
+					}
+					edgeDigest, edge := newEdge(replacedBundle.digest, entryBundle.digest)
+					graph.Edges[edgeDigest] = edge
+
+					chTagDigest, chTag := newTag(graphv1.ScopeEdge, "channel", ch.Name, edgeDigest)
+					graph.Tags[chTagDigest] = chTag
+
+					distTagDigest, distTag := newTag(graphv1.ScopeEdge, "dist", dist, edgeDigest)
+					graph.Tags[distTagDigest] = distTag
 				}
-				edgeDigest := digestOf(edge)
-				graph.Edges[edgeDigest] = edge
-				edgeTag := graphv1.Tag{
-					MediaType: graphv1.MediaTypeTag,
-					Scope:     graphv1.ScopeEdge,
-					Key:       "channel",
-					Value:     ch.Name,
-					Reference: edgeDigest,
+				for _, skipName := range entry.Skips {
+					skippedBundle, ok := bundlesByName[skipName]
+					if !ok {
+						_, _ = fmt.Fprintf(os.Stderr, "WARNING: skipping edge creation for unknown bundle %q for entry %q in channel %q in dist %q\n", skipName, entry.Name, ch.Name, dist)
+						continue
+					}
+
+					edgeDigest, edge := newEdge(skippedBundle.digest, entryBundle.digest)
+					graph.Edges[edgeDigest] = edge
+
+					chTagDigest, chTag := newTag(graphv1.ScopeEdge, "channel", ch.Name, edgeDigest)
+					graph.Tags[chTagDigest] = chTag
+
+					distTagDigest, distTag := newTag(graphv1.ScopeEdge, "dist", dist, edgeDigest)
+					graph.Tags[distTagDigest] = distTag
 				}
-				edgeTagDigest := digestOf(edgeTag)
-				graph.Tags[edgeTagDigest] = edgeTag
-			}
-			for _, skipName := range entry.Skips {
-				skippedBundle, ok := bundlesByName[skipName]
-				if !ok {
-					return nil, fmt.Errorf("bundle %q not found", skipName)
+				if entry.SkipRange != "" {
+					skipRange, err := bsemver.ParseRange(entry.SkipRange)
+					if err != nil {
+						_, _ = fmt.Fprintf(os.Stderr, "WARNING: skipping edge creation for invalid skipRange %q for entry %q in channel %q in dist %q: %w\n", entry.SkipRange, entry.Name, ch.Name, dist, err)
+					} else {
+						for _, skipRangeBundle := range pkgBundles {
+							bv := bsemver.MustParse(skipRangeBundle.graph.Version.String())
+							if !skipRange(bv) {
+								continue
+							}
+
+							edgeDigest, edge := newEdge(skipRangeBundle.digest, entryBundle.digest)
+							graph.Edges[edgeDigest] = edge
+
+							chTagDigest, chTag := newTag(graphv1.ScopeEdge, "channel", ch.Name, edgeDigest)
+							graph.Tags[chTagDigest] = chTag
+
+							distTagDigest, distTag := newTag(graphv1.ScopeEdge, "dist", dist, edgeDigest)
+							graph.Tags[distTagDigest] = distTag
+						}
+					}
 				}
-				edge := graphv1.Edge{
-					MediaType: graphv1.MediaTypeEdge,
-					From:      skippedBundle.digest,
-					To:        entryBundle.digest,
-				}
-				edgeDigest := digestOf(edge)
-				graph.Edges[edgeDigest] = edge
-				edgeTag := graphv1.Tag{
-					MediaType: graphv1.MediaTypeTag,
-					Scope:     graphv1.ScopeEdge,
-					Key:       "channel",
-					Value:     ch.Name,
-					Reference: edgeDigest,
-				}
-				edgeTagDigest := digestOf(edgeTag)
-				graph.Tags[edgeTagDigest] = edgeTag
-			}
-			skipRange, err := bsemver.ParseRange(entry.SkipRange)
-			if err != nil {
-				return nil, fmt.Errorf("invalid skipRange for entry %q in channel %q: %w", entry.Name, ch.Name, err)
-			}
-			for _, skipRangeBundle := range pkgBundles {
-				bv := bsemver.MustParse(skipRangeBundle.graph.Version.String())
-				if !skipRange(bv) {
-					continue
-				}
-				edge := graphv1.Edge{
-					MediaType: graphv1.MediaTypeEdge,
-					From:      skipRangeBundle.digest,
-					To:        entryBundle.digest,
-				}
-				edgeDigest := digestOf(edge)
-				graph.Edges[edgeDigest] = edge
-				edgeTag := graphv1.Tag{
-					MediaType: graphv1.MediaTypeTag,
-					Scope:     graphv1.ScopeEdge,
-					Key:       "channel",
-					Value:     ch.Name,
-					Reference: edgeDigest,
-				}
-				edgeTagDigest := digestOf(edgeTag)
-				graph.Tags[edgeTagDigest] = edgeTag
 			}
 		}
 	}
@@ -208,6 +192,26 @@ func parseBundleVersion(props []property.Property) (*mmsemver.Version, error) {
 		return v, nil
 	}
 	return nil, errors.New("no version information found")
+}
+
+func newEdge(from, to digest.Digest) (digest.Digest, graphv1.Edge) {
+	edge := graphv1.Edge{
+		MediaType: graphv1.MediaTypeEdge,
+		From:      from,
+		To:        to,
+	}
+	return digestOf(edge), edge
+}
+
+func newTag(scope, key, value string, reference digest.Digest) (digest.Digest, graphv1.Tag) {
+	tag := graphv1.Tag{
+		MediaType: graphv1.MediaTypeTag,
+		Scope:     scope,
+		Key:       key,
+		Value:     value,
+		Reference: reference,
+	}
+	return digestOf(tag), tag
 }
 
 func digestOf(v any) digest.Digest {

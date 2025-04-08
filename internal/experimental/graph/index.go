@@ -21,10 +21,11 @@ type Index struct {
 func NewIndex() *Index {
 	return &Index{
 		graph: &graphv1.Graph{
-			MediaType: graphv1.MediaTypeGraph,
-			Nodes:     map[digest.Digest]graphv1.Node{},
-			Edges:     map[digest.Digest]graphv1.Edge{},
-			Tags:      map[digest.Digest]graphv1.Tag{},
+			MediaType:          graphv1.MediaTypeGraph,
+			Nodes:              map[digest.Digest]graphv1.Node{},
+			Edges:              map[digest.Digest]graphv1.Edge{},
+			Tags:               map[digest.Digest]graphv1.Tag{},
+			ReferenceOnlyNodes: map[digest.Digest]graphv1.Node{},
 		},
 		nvrToNode:  map[graphv1.NVR]digest.Digest{},
 		nodeToTags: map[digest.Digest][]digest.Digest{},
@@ -36,11 +37,8 @@ func NewIndex() *Index {
 
 func (idx *Index) AddNode(n graphv1.Node, tags map[string][]string) digest.Digest {
 	nodeDigest := digestOf(n)
-	if _, ok := idx.nvrToNode[n.NVR]; ok {
-		panic("duplicate nvr found")
-	}
-	if _, ok := idx.graph.Nodes[nodeDigest]; ok {
-		panic("duplicate node digest found")
+	if existingDigest, ok := idx.nvrToNode[n.NVR]; ok && existingDigest != nodeDigest {
+		panic("existing NVR found with different node digest")
 	}
 	idx.graph.Nodes[nodeDigest] = n
 	idx.nvrToNode[n.NVR] = nodeDigest

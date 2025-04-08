@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -15,16 +16,25 @@ import (
 
 func main() {
 	cmd := cobra.Command{
-		Use:  "convert <fbcDirectory>",
-		Args: cobra.ExactArgs(1),
+		Use:  "convert <fbcDirectory>...",
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
 
-			fbc, err := declcfg.LoadFS(cmd.Context(), os.DirFS(args[0]))
-			if err != nil {
-				return fmt.Errorf("loading declarative config: %w", err)
+			fbcs := make(map[string]declcfg.DeclarativeConfig, len(args))
+			for _, arg := range args {
+				dist, fbcDir, ok := strings.Cut(arg, ":")
+				if !ok {
+					return fmt.Errorf("invalid argument %q", arg)
+				}
+				fbc, err := declcfg.LoadFS(cmd.Context(), os.DirFS(fbcDir))
+				if err != nil {
+					return fmt.Errorf("loading declarative config: %w", err)
+				}
+				fbcs[dist] = *fbc
 			}
-			g, err := graph.FromFBC(*fbc)
+
+			g, err := graph.FromFBC(fbcs)
 			if err != nil {
 				return err
 			}
