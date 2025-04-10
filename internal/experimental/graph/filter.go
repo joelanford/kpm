@@ -4,20 +4,42 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 
-	"github.com/gogo/protobuf/proto"
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/checker/decls"
 	"github.com/google/cel-go/common/types"
 	"github.com/opencontainers/go-digest"
+	"google.golang.org/protobuf/proto"
 
 	graphv1 "github.com/joelanford/kpm/internal/experimental/api/graph/v1"
 	"github.com/joelanford/kpm/internal/experimental/api/graph/v1/pb"
+	"github.com/joelanford/kpm/internal/experimental/graph/celfunc"
 )
 
 type Selector struct {
 	Expression cel.Program
+}
+
+func ParseSelector(in string) (*Selector, error) {
+	envOpts := []cel.EnvOption{
+		celfunc.EntryInDistro(),
+		celfunc.EntryInPackage(),
+		celfunc.EntryInChannel(),
+		celfunc.EntryHasTag(),
+		celfunc.SemverMatches(),
+		cel.Types(proto.Message(&pb.Entry{})),
+		cel.Declarations(
+			decls.NewVar("entry", decls.NewObjectType("pb.Entry")),
+		),
+	}
+	prg, err := compileExpression(in, envOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Selector{
+		Expression: prg,
+	}, nil
 }
 
 func compileExpression(expr string, envOpts []cel.EnvOption) (cel.Program, error) {
@@ -39,23 +61,6 @@ func compileExpression(expr string, envOpts []cel.EnvOption) (cel.Program, error
 		return nil, err
 	}
 	return prg, nil
-}
-
-func ParseSelector(in string) (*Selector, error) {
-	envOpts := []cel.EnvOption{
-		cel.Types(proto.Message(&pb.Entry{})),
-		cel.Declarations(
-			decls.NewVar("entry", decls.NewObjectType("pb.Entry")),
-		),
-	}
-	prg, err := compileExpression(in, envOpts)
-	if err != nil {
-		return nil, err
-	}
-
-	return &Selector{
-		Expression: prg,
-	}, nil
 }
 
 func tagMapToEntryTags(m map[string][]string) map[string]*pb.TagValues {
@@ -125,37 +130,38 @@ func (f *Selector) MatchEdge(ctx context.Context, g *graphv1.Graph, dgst digest.
 	return out.Value().(bool), nil
 }
 
-func (f *Selector) Apply(ctx context.Context, i *Index) error {
-	refNodes := map[digest.Digest]struct{}{}
-	for dgst, edge := range i.graph.Edges {
-		match, err := f.MatchEdge(ctx, i.graph, dgst)
-		if err != nil {
-			return err
-		}
-		if match {
-			refNodes[edge.From] = struct{}{}
-			refNodes[edge.To] = struct{}{}
-		} else {
-			delete(i.graph.Edges, dgst)
-			delete(i.graph.Tags, dgst)
-		}
-	}
-
-	for dgst, node := range i.graph.Nodes {
-		match, err := f.MatchNode(ctx, i.graph, dgst)
-		if err != nil {
-			return err
-		}
-		if !match {
-			delete(i.graph.Nodes, dgst)
-			delete(i.graph.Tags, dgst)
-			i.nvrToNodes[node.NVR] = slices.DeleteFunc(i.nvrToNodes[node.NVR], func(d digest.Digest) bool {
-				return d == dgst
-			})
-			if _, ok := refNodes[dgst]; ok {
-				i.graph.ReferenceOnlyNodes[dgst] = node
-			}
-		}
-	}
-	return nil
-}
+//
+//func (f *Selector) Apply(ctx context.Context, i *mem.Index) error {
+//	refNodes := map[digest.Digest]struct{}{}
+//	for dgst, edge := range i.graph.Edges {
+//		match, err := f.MatchEdge(ctx, i.graph, dgst)
+//		if err != nil {
+//			return err
+//		}
+//		if match {
+//			refNodes[edge.From] = struct{}{}
+//			refNodes[edge.To] = struct{}{}
+//		} else {
+//			delete(i.graph.Edges, dgst)
+//			delete(i.graph.Tags, dgst)
+//		}
+//	}
+//
+//	for dgst, node := range i.graph.Nodes {
+//		match, err := f.MatchNode(ctx, i.graph, dgst)
+//		if err != nil {
+//			return err
+//		}
+//		if !match {
+//			delete(i.graph.Nodes, dgst)
+//			delete(i.graph.Tags, dgst)
+//			i.nvrToNodes[node.NVR] = slices.DeleteFunc(i.nvrToNodes[node.NVR], func(d digest.Digest) bool {
+//				return d == dgst
+//			})
+//			if _, ok := refNodes[dgst]; ok {
+//				i.graph.ReferenceOnlyNodes[dgst] = node
+//			}
+//		}
+//	}
+//	return nil
+//}

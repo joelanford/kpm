@@ -9,10 +9,6 @@ const (
 	MediaTypeGraph = "application/vnd.cncf.olm.graph.v1+json"
 	MediaTypeNode  = "application/vnd.cncf.olm.node.v1+json"
 	MediaTypeEdge  = "application/vnd.cncf.olm.edge.v1+json"
-	MediaTypeTag   = "application/vnd.cncf.olm.tag.v1+json"
-
-	ScopeNode = "node"
-	ScopeEdge = "edge"
 )
 
 type Graph struct {

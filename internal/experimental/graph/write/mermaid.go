@@ -80,7 +80,7 @@ func Mermaid(w io.Writer, g *graphv1.Graph) error {
 
 	var sb bytes.Buffer
 
-	_, _ = fmt.Fprintln(&sb, "graph BT")
+	_, _ = fmt.Fprintln(&sb, "graph LR")
 	for _, node := range mermaidNodes {
 		_, _ = fmt.Fprintf(&sb, "  %s[%s.v%s-%d]:::%s\n", node.ID, node.Name, node.Version, node.Release, node.Class)
 	}

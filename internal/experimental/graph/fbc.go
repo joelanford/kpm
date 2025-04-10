@@ -15,9 +15,10 @@ import (
 	"github.com/operator-framework/operator-registry/alpha/property"
 
 	graphv1 "github.com/joelanford/kpm/internal/experimental/api/graph/v1"
+	"github.com/joelanford/kpm/internal/experimental/graph/index"
 )
 
-func (idx *Index) AddFBC(fbc declcfg.DeclarativeConfig, tags map[string][]string) error {
+func AddFBC(idx index.Index, fbc declcfg.DeclarativeConfig, tags map[string][]string) error {
 	xBundles, err := convertBundles(fbc.Bundles)
 	if err != nil {
 		return err
@@ -25,12 +26,14 @@ func (idx *Index) AddFBC(fbc declcfg.DeclarativeConfig, tags map[string][]string
 
 	for _, pkgBundles := range xBundles {
 		for _, b := range pkgBundles {
-			idx.AddNode(*b.graph, tags)
+			if _, err := idx.AddNode(*b.graph, tags); err != nil {
+				return err
+			}
 		}
 	}
 
 	for _, ch := range fbc.Channels {
-		chTags := mergeTags(tags, map[string][]string{"channel": {ch.Name}})
+		chTags := index.MergeTags(tags, map[string][]string{"channel": {ch.Name}})
 
 		pkgBundles := xBundles[ch.Package]
 		bundlesByName := map[string]*xBundle{}
@@ -44,7 +47,9 @@ func (idx *Index) AddFBC(fbc declcfg.DeclarativeConfig, tags map[string][]string
 			if !ok {
 				return fmt.Errorf("bundle %q not found", entry.Name)
 			}
-			idx.AddTag(entryBundle.digest, "channel", ch.Name)
+			if err := idx.AddTag(entryBundle.digest, "channel", ch.Name); err != nil {
+				return err
+			}
 
 			if entry.Replaces != "" {
 				replacedBundle, ok := bundlesByName[entry.Replaces]
@@ -53,7 +58,7 @@ func (idx *Index) AddFBC(fbc declcfg.DeclarativeConfig, tags map[string][]string
 					continue
 				}
 
-				if _, err := idx.AddEdge(NewEdge(replacedBundle.digest, entryBundle.digest), chTags); err != nil {
+				if _, err := idx.AddEdge(index.NewEdge(replacedBundle.digest, entryBundle.digest), chTags); err != nil {
 					return fmt.Errorf("failed edge creation from %q to %q channel %q with tags %v: %w\n", entry.Replaces, entry.Name, ch.Name, tags, err)
 				}
 			}
@@ -63,7 +68,7 @@ func (idx *Index) AddFBC(fbc declcfg.DeclarativeConfig, tags map[string][]string
 					_, _ = fmt.Fprintf(os.Stderr, "WARNING: skipping edge creation for unknown bundle %q for entry %q in channel %q with tags %v\n", skipName, entry.Name, ch.Name, tags)
 					continue
 				}
-				if _, err := idx.AddEdge(NewEdge(skippedBundle.digest, entryBundle.digest), chTags); err != nil {
+				if _, err := idx.AddEdge(index.NewEdge(skippedBundle.digest, entryBundle.digest), chTags); err != nil {
 					return fmt.Errorf("failed edge creation from %q to %q channel %q with tags %v: %w\n", entry.Replaces, entry.Name, ch.Name, tags, err)
 				}
 			}
@@ -77,7 +82,7 @@ func (idx *Index) AddFBC(fbc declcfg.DeclarativeConfig, tags map[string][]string
 						if !skipRange(bv) {
 							continue
 						}
-						if _, err := idx.AddEdge(NewEdge(skipRangeBundle.digest, entryBundle.digest), chTags); err != nil {
+						if _, err := idx.AddEdge(index.NewEdge(skipRangeBundle.digest, entryBundle.digest), chTags); err != nil {
 							return fmt.Errorf("failed edge creation from %q to %q channel %q with tags %v: %w\n", entry.Replaces, entry.Name, ch.Name, tags, err)
 						}
 					}
@@ -144,7 +149,7 @@ func convertBundles(in []declcfg.Bundle) (map[string][]xBundle, error) {
 			}
 		}
 		for i := range pkgBundles {
-			pkgBundles[i].digest = digestOf(pkgBundles[i].graph)
+			pkgBundles[i].digest = index.DigestOf(pkgBundles[i].graph)
 		}
 		out[pkgName] = pkgBundles
 	}

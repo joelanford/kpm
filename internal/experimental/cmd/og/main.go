@@ -2,15 +2,11 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
-	"github.com/google/renameio"
 	"github.com/opencontainers/go-digest"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -20,6 +16,8 @@ import (
 
 	"github.com/joelanford/kpm/internal/action"
 	"github.com/joelanford/kpm/internal/experimental/graph"
+	"github.com/joelanford/kpm/internal/experimental/graph/index"
+	"github.com/joelanford/kpm/internal/experimental/graph/index/mem"
 	"github.com/joelanford/kpm/internal/experimental/graph/write"
 )
 
@@ -72,19 +70,15 @@ func newAddFBCCmd() *cobra.Command {
 			fbcReference := args[0]
 			tagMap := parseTags(tags)
 
-			idx, err := openIndex(graphDir, false)
+			idx, err := mem.Open(graphDir)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
 			}
+			defer idx.Close()
 
 			fbcRefMask := action2.RefDCImage | action2.RefDCDir | action2.RefSqliteFile
 			if err := addReferences(cmd.Context(), idx, fbcRefMask, tagMap, fbcReference); err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
-
-			if err := saveIndex(idx, graphDir); err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
 			}
@@ -109,19 +103,15 @@ func newAddNodeCmd() *cobra.Command {
 			bundleRefs := args
 			tagMap := parseTags(tags)
 
-			idx, err := openIndex(graphDir, false)
+			idx, err := mem.Open(graphDir)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
 			}
+			defer idx.Close()
 
 			fbcRefMask := action2.RefBundleImage
 			if err := addReferences(cmd.Context(), idx, fbcRefMask, tagMap, bundleRefs...); err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
-
-			if err := saveIndex(idx, graphDir); err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
 			}
@@ -158,11 +148,12 @@ func newAddEdgeCmd() *cobra.Command {
 				os.Exit(1)
 			}
 
-			idx, err := openIndex(graphDir, true)
+			idx, err := mem.Open(graphDir)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
 			}
+			defer idx.Close()
 
 			var (
 				fromNodes []digest.Digest
@@ -189,7 +180,7 @@ func newAddEdgeCmd() *cobra.Command {
 			}
 			for _, from := range fromNodes {
 				for _, to := range toNodes {
-					if _, err := idx.AddEdge(graph.NewEdge(from, to), tagMap); err != nil {
+					if _, err := idx.AddEdge(index.NewEdge(from, to), tagMap); err != nil {
 						fmt.Fprintln(os.Stderr, err)
 						os.Exit(1)
 					}
@@ -221,11 +212,12 @@ func newTagCmd() *cobra.Command {
 				os.Exit(1)
 			}
 
-			idx, err := openIndex(graphDir, true)
+			idx, err := mem.Open(graphDir)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
 			}
+			defer idx.Close()
 
 			var matchingDigests []digest.Digest
 			for dgst := range idx.Graph().Nodes {
@@ -255,11 +247,6 @@ func newTagCmd() *cobra.Command {
 					}
 				}
 			}
-
-			if err := saveIndex(idx, graphDir); err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
 		},
 	}
 
@@ -279,11 +266,12 @@ func newQueryCmd() *cobra.Command {
 		Run: func(cmd *cobra.Command, args []string) {
 			cmd.SilenceUsage = true
 
-			idx, err := openIndex(graphDir, true)
+			idx, err := mem.Open(graphDir)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
 			}
+			defer idx.Close()
 
 			if filter != "" {
 				f, err := graph.ParseSelector(filter)
@@ -291,7 +279,7 @@ func newQueryCmd() *cobra.Command {
 					fmt.Fprintln(os.Stderr, err)
 					os.Exit(1)
 				}
-				if err := f.Apply(cmd.Context(), idx); err != nil {
+				if err := idx.Apply(cmd.Context(), f); err != nil {
 					fmt.Fprintln(os.Stderr, err)
 					os.Exit(1)
 				}
@@ -333,53 +321,7 @@ func parseTags(tagPairs []string) map[string][]string {
 	return tagMap
 }
 
-func openIndex(graphDir string, requireExists bool) (*graph.Index, error) {
-	graphFile := filepath.Join(graphDir, "graph.json")
-	g := graph.NewGraph()
-	exists := false
-	if s, err := os.Stat(graphFile); err == nil && !s.IsDir() {
-		exists = true
-		graphData, err := os.ReadFile(graphFile)
-		if err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal(graphData, g); err != nil {
-			return nil, err
-		}
-	}
-	if !exists && requireExists {
-		return nil, fmt.Errorf("graph file %q does not exist", graphFile)
-	}
-	idx := graph.NewIndexFromGraph(g)
-	return idx, nil
-}
-
-func saveIndex(idx *graph.Index, graphDir string) error {
-	graphFile := filepath.Join(graphDir, "graph.json")
-	cleanupGraphDir := func() error { return nil }
-	if _, err := os.Stat(graphDir); os.IsNotExist(err) {
-		if err := os.MkdirAll(graphDir, 0755); err != nil {
-			return err
-		}
-		cleanupGraphDir = func() error { return os.RemoveAll(graphDir) }
-	}
-
-	t, err := renameio.TempFile(graphDir, graphFile)
-	if err != nil {
-		return errors.Join(err, cleanupGraphDir())
-	}
-	defer t.Cleanup()
-
-	if err := write.JSON(t, idx.Graph()); err != nil {
-		return errors.Join(err, cleanupGraphDir())
-	}
-	if err := t.CloseAtomicallyReplace(); err != nil {
-		return errors.Join(err, cleanupGraphDir())
-	}
-	return nil
-}
-
-func addReferences(ctx context.Context, idx *graph.Index, allowedRefMask action2.RefType, tagMap map[string][]string, refs ...string) error {
+func addReferences(ctx context.Context, idx index.Index, allowedRefMask action2.RefType, tagMap map[string][]string, refs ...string) error {
 	m, err := migrations.NewMigrations(migrations.AllMigrations)
 	if err != nil {
 		return err
@@ -394,7 +336,7 @@ func addReferences(ctx context.Context, idx *graph.Index, allowedRefMask action2
 		if err != nil {
 			return err
 		}
-		if err := idx.AddFBC(*fbc, tagMap); err != nil {
+		if err := graph.AddFBC(idx, *fbc, tagMap); err != nil {
 			return err
 		}
 	}
