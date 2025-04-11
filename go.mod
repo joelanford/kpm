@@ -9,6 +9,7 @@ require (
 	github.com/dschmidt/go-layerfs v0.2.0
 	github.com/go-sprout/sprout v0.6.0
 	github.com/google/go-containerregistry v0.20.0
+	github.com/google/renameio v0.1.0
 	github.com/mattn/go-sqlite3 v1.14.22
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.0
