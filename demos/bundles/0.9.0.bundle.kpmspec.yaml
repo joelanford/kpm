@@ -1,5 +1,0 @@
-apiVersion: specs.kpm.io/v1
-kind: Bundle
-mediaType: olm.operatorframework.io/registry+v1
-imageReference: quay.io/joelanford/{.PackageName}-bundle:v{.Version}
-bundleRoot: ./0.9.0/

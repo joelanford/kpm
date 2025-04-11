@@ -1,59 +1,52 @@
 package cli
 
 import (
-	"encoding/json"
-	"errors"
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 
-	"github.com/joelanford/kpm/internal/bundle"
+	"github.com/joelanford/kpm/internal/pkg/spec"
 )
 
 func BuildBundle() *cobra.Command {
-	var (
-		fileTemplate string
-		reportFile   string
-	)
+	var reportFile string
+
 	cmd := &cobra.Command{
-		Use:   "bundle <bundleSpecFile>",
-		Short: "Build a bundle",
-		Long: `Build a kpm bundle from the specified bundle directory.
-`,
-
+		Use:  "bundle <spec-file>",
 		Args: cobra.ExactArgs(1),
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			bundleSpecFile := args[0]
+			cmd.SilenceUsage = true
+			cmd.SilenceErrors = true
 
-			res, err := bundle.BuildFromSpecFile(ctx, bundleSpecFile, bundle.StringFromBundleTemplate(fileTemplate))
+			// load kpm spec file from cli arg
+			//   TODO: evaluate/render spec file? (gotemplate, hcl, starlark, etc.)
+			specFileLoader := spec.DefaultYAML
+			specFile, err := specFileLoader.LoadSpecFile(args[0])
 			if err != nil {
-				cmd.PrintErrf("failed to build bundle: %v\n", err)
-				os.Exit(1)
+				return err
 			}
-			fmt.Printf("Bundle written to %s with tag %q (digest: %s)\n", res.FilePath, fmt.Sprintf("%s:%s", res.Repository, res.Tag), res.Descriptor.Digest)
+
+			// write it
+			report, err := spec.Build(ctx, specFile)
+			if err != nil {
+				return err
+			}
 
 			if reportFile != "" {
-				f, err := os.Create(reportFile)
-				if err != nil {
-					cmd.PrintErrf("failed to create report file: %v\n", err)
-					os.Exit(1)
-				}
-				defer f.Close()
-
-				enc := json.NewEncoder(f)
-				enc.SetIndent("", "  ")
-				enc.SetEscapeHTML(false)
-				if err := enc.Encode(res); err != nil {
-					cmd.PrintErrf("failed to write report for result to %s: %v", reportFile, errors.Join(err, os.Remove(reportFile)))
-					os.Exit(1)
+				if err := report.WriteFile(reportFile); err != nil {
+					return err
 				}
 			}
+
+			fmt.Printf("Bundle %s written to %s (digest: %s)\n",
+				report.ID,
+				report.OutputFile,
+				report.Descriptor.Digest,
+			)
+			return nil
 		},
 	}
-	cmd.Flags().StringVarP(&fileTemplate, "file", "f", "{.PackageName}-v{.Version}.bundle.kpm",
-		"Templated path for output file name (use {.Package} and/or {.Version} to automatically inject package name and version)")
-	cmd.Flags().StringVar(&reportFile, "report-file", "", "Optionally, a file in which to write a JSON report of the build result.")
+	cmd.Flags().StringVar(&reportFile, "report-file", "", "if specified, path to write build report")
 	return cmd
 }

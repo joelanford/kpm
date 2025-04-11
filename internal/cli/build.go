@@ -11,7 +11,6 @@ func Build() *cobra.Command {
 	}
 	cmd.AddCommand(
 		BuildBundle(),
-		BuildCatalog(),
 	)
 	return cmd
 }
