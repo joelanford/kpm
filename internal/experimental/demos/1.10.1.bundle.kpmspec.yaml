@@ -1,8 +1,0 @@
-apiVersion: specs.kpm.io/v1alpha1
-kind: RegistryV1
-
-release: 1{{.dist}}
-source:
-  sourceType: BundleDirectory
-  bundleDirectory:
-    path: ./1.10.1

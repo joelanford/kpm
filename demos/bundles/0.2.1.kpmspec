@@ -1,0 +1,9 @@
+# nonk8s
+apiVersion: specs.kpm.io/v1alpha1
+kind: RegistryV1
+
+release: 1{{ .Values.dist | default "" }}
+source:
+  sourceType: BundleDirectory
+  bundleDirectory:
+    path: ./0.2.1

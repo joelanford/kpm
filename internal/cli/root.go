@@ -10,9 +10,6 @@ func Root() *cobra.Command {
 	}
 	cmd.AddCommand(
 		Build(),
-		Extract(),
-		Push(),
-		Render(),
 	)
 	return cmd
 }

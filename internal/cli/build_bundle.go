@@ -1,59 +1,83 @@
 package cli
 
 import (
-	"encoding/json"
-	"errors"
 	"fmt"
-	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
-	"github.com/joelanford/kpm/internal/bundle"
+	"github.com/joelanford/kpm/internal/builder"
+	_ "github.com/joelanford/kpm/internal/builder/registryv1"
+	"github.com/joelanford/kpm/internal/loader"
 )
 
 func BuildBundle() *cobra.Command {
 	var (
-		fileTemplate string
-		reportFile   string
+		values     []string
+		reportFile string
 	)
+
 	cmd := &cobra.Command{
-		Use:   "bundle <bundleSpecFile>",
-		Short: "Build a bundle",
-		Long: `Build a kpm bundle from the specified bundle directory.
-`,
-
+		Use:  "bundle <spec-file>",
 		Args: cobra.ExactArgs(1),
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			bundleSpecFile := args[0]
+			cmd.SilenceUsage = true
+			cmd.SilenceErrors = true
 
-			res, err := bundle.BuildFromSpecFile(ctx, bundleSpecFile, bundle.StringFromBundleTemplate(fileTemplate))
-			if err != nil {
-				cmd.PrintErrf("failed to build bundle: %v\n", err)
-				os.Exit(1)
+			// load input variables
+			//   - values from flags
+			//   - TODO: default files (or files from flag-based override)
+			templateData := loader.GoTemplateData{
+				Values: map[string]any{},
 			}
-			fmt.Printf("Bundle written to %s with tag %q (digest: %s)\n", res.FilePath, fmt.Sprintf("%s:%s", res.Repository, res.Tag), res.Descriptor.Digest)
+			for _, value := range values {
+				k, v, ok := strings.Cut(value, "=")
+				if !ok {
+					return fmt.Errorf("invalid set-value %q", value)
+				}
+				templateData.Values[k] = v
+			}
+
+			// 1. load kpm spec file
+			//   - from cli arg
+			// 2. evaluate spec file
+			// 3. convert spec to builder
+			l := loader.DefaultGoTemplate
+			b, err := l.LoadSpecFile(args[0], templateData)
+			if err != nil {
+				return err
+			}
+
+			// build it
+			id, manifest, err := b.Build(ctx)
+			if err != nil {
+				return err
+			}
+
+			// write it
+			// tag it
+			// tar it
+			report, err := builder.WriteKpmManifest(ctx, *id, manifest)
+			if err != nil {
+				return err
+			}
 
 			if reportFile != "" {
-				f, err := os.Create(reportFile)
-				if err != nil {
-					cmd.PrintErrf("failed to create report file: %v\n", err)
-					os.Exit(1)
-				}
-				defer f.Close()
-
-				enc := json.NewEncoder(f)
-				enc.SetIndent("", "  ")
-				enc.SetEscapeHTML(false)
-				if err := enc.Encode(res); err != nil {
-					cmd.PrintErrf("failed to write report for result to %s: %v", reportFile, errors.Join(err, os.Remove(reportFile)))
-					os.Exit(1)
+				if err := report.WriteFile(reportFile); err != nil {
+					return err
 				}
 			}
+
+			fmt.Printf("Bundle written to %s with tag %q (digest: %s)\n",
+				report.OutputFile,
+				report.Image.Reference,
+				report.Image.Descriptor.Digest,
+			)
+			return nil
 		},
 	}
-	cmd.Flags().StringVarP(&fileTemplate, "file", "f", "{.PackageName}-v{.Version}.bundle.kpm",
-		"Templated path for output file name (use {.Package} and/or {.Version} to automatically inject package name and version)")
-	cmd.Flags().StringVar(&reportFile, "report-file", "", "Optionally, a file in which to write a JSON report of the build result.")
+	cmd.Flags().StringSliceVar(&values, "set-value", nil, "set values for templating the spec file (e.g. key=value)")
+	cmd.Flags().StringVar(&reportFile, "report-file", "", "if specified, path to write build report")
 	return cmd
 }
