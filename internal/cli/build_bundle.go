@@ -5,9 +5,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/joelanford/kpm/internal/builder"
-	_ "github.com/joelanford/kpm/internal/builder/registryv1"
-	"github.com/joelanford/kpm/internal/loader"
+	"github.com/joelanford/kpm/internal/pkg/builder"
+	_ "github.com/joelanford/kpm/internal/pkg/builder/registryv1"
+	"github.com/joelanford/kpm/internal/pkg/loader"
 )
 
 func BuildBundle() *cobra.Command {

@@ -7,7 +7,7 @@ import (
 )
 
 func main() {
-	if err := cli.Root().Execute(); err != nil {
+	if err := cli.Root("kpm").Execute(); err != nil {
 		log.Fatal(err)
 	}
 }
