@@ -2,7 +2,7 @@
 apiVersion: specs.kpm.io/v1alpha1
 kind: RegistryV1
 
-release: 1{{ .Values.dist | default "" }}
+release: 1
 source:
   sourceType: BundleDirectory
   bundleDirectory:

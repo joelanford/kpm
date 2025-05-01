@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -12,10 +11,7 @@ import (
 )
 
 func BuildBundle() *cobra.Command {
-	var (
-		values     []string
-		reportFile string
-	)
+	var reportFile string
 
 	cmd := &cobra.Command{
 		Use:  "bundle <spec-file>",
@@ -25,26 +21,12 @@ func BuildBundle() *cobra.Command {
 			cmd.SilenceUsage = true
 			cmd.SilenceErrors = true
 
-			// load input variables
-			//   - values from flags
-			//   - TODO: default files (or files from flag-based override)
-			templateData := loader.GoTemplateData{
-				Values: map[string]any{},
-			}
-			for _, value := range values {
-				k, v, ok := strings.Cut(value, "=")
-				if !ok {
-					return fmt.Errorf("invalid set-value %q", value)
-				}
-				templateData.Values[k] = v
-			}
-
 			// 1. load kpm spec file
 			//   - from cli arg
-			// 2. evaluate spec file
+			// 2. TODO: evaluate spec file? (gotemplate, hcl, starlark, etc.)
 			// 3. convert spec to builder
-			l := loader.DefaultGoTemplate
-			b, err := l.LoadSpecFile(args[0], templateData)
+			l := loader.DefaultYAML
+			b, err := l.LoadSpecFile(args[0])
 			if err != nil {
 				return err
 			}
@@ -77,7 +59,6 @@ func BuildBundle() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringSliceVar(&values, "set-value", nil, "set values for templating the spec file (e.g. key=value)")
 	cmd.Flags().StringVar(&reportFile, "report-file", "", "if specified, path to write build report")
 	return cmd
 }
