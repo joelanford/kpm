@@ -1,8 +1,7 @@
-package loader
+package spec
 
 import (
 	"fmt"
-	"github.com/joelanford/kpm/internal/pkg/builder"
 	"os"
 	"path/filepath"
 
@@ -11,10 +10,10 @@ import (
 )
 
 type YAML struct {
-	Registry *LoaderRegistry
+	Registry *Registry
 }
 
-func (l *YAML) LoadSpecFile(path string) (builder.Builder, error) {
+func (l *YAML) LoadSpecFile(path string) (Spec, error) {
 	specFileData, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err

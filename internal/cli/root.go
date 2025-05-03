@@ -12,6 +12,7 @@ func Root(name string) *cobra.Command {
 	}
 	cmd.AddCommand(
 		Build(),
+		Push(),
 		hidden(experimentalcli.Root("experimental")),
 	)
 	return cmd

@@ -1,8 +1,7 @@
-package loader
+package spec
 
 import (
 	"fmt"
-	"github.com/joelanford/kpm/internal/pkg/builder"
 	"sync"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -15,18 +14,18 @@ var (
 	DefaultRegistry = NewLoaderRegistry()
 )
 
-type LoaderRegistry struct {
-	reg map[schema.GroupVersionKind]LoadSpecBytesFunc
+type Registry struct {
+	reg map[schema.GroupVersionKind]LoadSpecFunc
 	mu  sync.RWMutex
 }
 
-func NewLoaderRegistry() *LoaderRegistry {
-	return &LoaderRegistry{reg: make(map[schema.GroupVersionKind]LoadSpecBytesFunc)}
+func NewLoaderRegistry() *Registry {
+	return &Registry{reg: make(map[schema.GroupVersionKind]LoadSpecFunc)}
 }
 
-type LoadSpecBytesFunc func([]byte, string) (builder.Builder, error)
+type LoadSpecFunc func([]byte, string) (Spec, error)
 
-func (r *LoaderRegistry) RegisterKind(gvk schema.GroupVersionKind, loadSpecFunc LoadSpecBytesFunc) error {
+func (r *Registry) RegisterKind(gvk schema.GroupVersionKind, loadSpecFunc LoadSpecFunc) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -37,7 +36,7 @@ func (r *LoaderRegistry) RegisterKind(gvk schema.GroupVersionKind, loadSpecFunc 
 	return nil
 }
 
-func (r *LoaderRegistry) GetLoadSpecFunc(gvk schema.GroupVersionKind) (LoadSpecBytesFunc, error) {
+func (r *Registry) GetLoadSpecFunc(gvk schema.GroupVersionKind) (LoadSpecFunc, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	loadSpec, exists := r.reg[gvk]

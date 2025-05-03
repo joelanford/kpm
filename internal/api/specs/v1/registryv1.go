@@ -12,10 +12,8 @@ const (
 
 type RegistryV1 struct {
 	metav1.TypeMeta `json:",inline"`
-
-	Release          string            `json:"release"`
-	ExtraAnnotations map[string]string `json:"extraAnnotations"`
-	Source           RegistryV1Source  `json:"source"`
+	
+	Source RegistryV1Source `json:"source"`
 }
 
 type RegistryV1Source struct {

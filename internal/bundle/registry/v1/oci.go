@@ -1,4 +1,4 @@
-package registryv1
+package v1
 
 import (
 	"bytes"
@@ -6,34 +6,42 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
-	"github.com/joelanford/kpm/internal/pkg/util/tar"
 	"io"
-	"io/fs"
 
 	"github.com/opencontainers/go-digest"
+	"github.com/opencontainers/image-spec/specs-go"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2"
 	"oras.land/oras-go/v2/content"
+
+	bundlev1alpha1 "github.com/joelanford/kpm/internal/api/bundle/v1alpha1"
+	"github.com/joelanford/kpm/internal/pkg/util/tar"
 )
 
-type RegistryV1Writer struct {
-	author      string
-	labels      map[string]string
-	annotations map[string]string
-	root        fs.FS
+func (b *Bundle) ID() bundlev1alpha1.ID {
+	return b.id
 }
 
-func (b *RegistryV1Writer) ArtifactType() string {
-	return ""
-}
-func (b *RegistryV1Writer) Annotations() map[string]string {
-	return b.annotations
-}
-func (b *RegistryV1Writer) Subject() *ocispec.Descriptor {
-	return nil
+func (b *Bundle) MarshalOCI(ctx context.Context, pusher content.Pusher) (ocispec.Descriptor, error) {
+	config, layers, err := b.pushConfigAndLayers(ctx, pusher)
+	if err != nil {
+		return ocispec.Descriptor{}, err
+	}
+
+	manifest := ocispec.Manifest{
+		Versioned: specs.Versioned{SchemaVersion: 2},
+		MediaType: ocispec.MediaTypeImageManifest,
+		Config:    config,
+		Layers:    layers,
+	}
+	manifestData, err := json.Marshal(manifest)
+	if err != nil {
+		return ocispec.Descriptor{}, err
+	}
+	return oras.PushBytes(ctx, pusher, ocispec.MediaTypeImageManifest, manifestData)
 }
 
-func (b *RegistryV1Writer) PushConfigAndLayers(ctx context.Context, pusher content.Pusher) (ocispec.Descriptor, []ocispec.Descriptor, error) {
+func (b *Bundle) pushConfigAndLayers(ctx context.Context, pusher content.Pusher) (ocispec.Descriptor, []ocispec.Descriptor, error) {
 	var layerData bytes.Buffer
 	diffIDHash := sha256.New()
 
@@ -41,15 +49,14 @@ func (b *RegistryV1Writer) PushConfigAndLayers(ctx context.Context, pusher conte
 		gzipWriter := gzip.NewWriter(&layerData)
 		defer gzipWriter.Close()
 		mw := io.MultiWriter(diffIDHash, gzipWriter)
-		return tar.Directory(mw, b.root)
+		return tar.Directory(mw, b.fsys)
 	}(); err != nil {
 		return ocispec.Descriptor{}, nil, err
 	}
 
 	cfg := ocispec.Image{
-		Author: b.author,
 		Config: ocispec.ImageConfig{
-			Labels: b.labels,
+			Labels: b.metadata.annotations.Annotations,
 		},
 		RootFS: ocispec.RootFS{
 			Type: "layers",

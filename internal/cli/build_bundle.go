@@ -5,9 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/joelanford/kpm/internal/pkg/builder"
-	_ "github.com/joelanford/kpm/internal/pkg/builder/registryv1"
-	"github.com/joelanford/kpm/internal/pkg/loader"
+	"github.com/joelanford/kpm/internal/pkg/spec"
 )
 
 func BuildBundle() *cobra.Command {
@@ -21,26 +19,17 @@ func BuildBundle() *cobra.Command {
 			cmd.SilenceUsage = true
 			cmd.SilenceErrors = true
 
-			// 1. load kpm spec file
-			//   - from cli arg
+			// 1. load kpm spec file from cli arg
 			// 2. TODO: evaluate spec file? (gotemplate, hcl, starlark, etc.)
 			// 3. convert spec to builder
-			l := loader.DefaultYAML
-			b, err := l.LoadSpecFile(args[0])
-			if err != nil {
-				return err
-			}
-
-			// build it
-			id, manifest, err := b.Build(ctx)
+			specFileLoader := spec.DefaultYAML
+			specFile, err := specFileLoader.LoadSpecFile(args[0])
 			if err != nil {
 				return err
 			}
 
 			// write it
-			// tag it
-			// tar it
-			report, err := builder.WriteKpmManifest(ctx, *id, manifest)
+			report, err := spec.Build(ctx, specFile)
 			if err != nil {
 				return err
 			}
@@ -51,10 +40,10 @@ func BuildBundle() *cobra.Command {
 				}
 			}
 
-			fmt.Printf("Bundle written to %s with tag %q (digest: %s)\n",
+			fmt.Printf("Bundle %s written to %s (digest: %s)\n",
+				report.ID.UnqualifiedReference(),
 				report.OutputFile,
-				report.Image.Reference,
-				report.Image.Descriptor.Digest,
+				report.Descriptor.Digest,
 			)
 			return nil
 		},

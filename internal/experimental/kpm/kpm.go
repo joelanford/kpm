@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/joelanford/kpm/internal/pkg/remote"
 	"io"
 	"os"
 
@@ -17,7 +18,6 @@ import (
 	"oras.land/oras-go/v2/content"
 	"oras.land/oras-go/v2/content/oci"
 
-	"github.com/joelanford/kpm/internal/experimental/remote"
 	"github.com/joelanford/kpm/internal/pkg/util/tar"
 )
 
