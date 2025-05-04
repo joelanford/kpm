@@ -91,7 +91,7 @@ func OpenBundle(ctx context.Context, path string) (*Bundle, error) {
 }
 
 func (k *Bundle) Descriptor() ocispec.Descriptor {
-	return k.idDesc
+	return k.bundleDesc
 }
 
 func (k *Bundle) Push(ctx context.Context, namespace string, opts oras.CopyGraphOptions) (reference.NamedTagged, error) {
