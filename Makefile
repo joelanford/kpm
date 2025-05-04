@@ -17,6 +17,10 @@ build:
 test:
 	go test ./...
 
+.PHONY: demos
+demos:
+	$(MAKE) -C demos
+
 ifeq ($(origin IMAGE_REPO), undefined)
 IMAGE_REPO := ghcr.io/joelanford/kpm
 endif
