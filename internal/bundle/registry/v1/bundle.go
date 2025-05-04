@@ -4,14 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"strings"
 
-	"github.com/blang/semver/v4"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/operator-framework/api/pkg/operators/v1alpha1"
-
-	bundlev1alpha1 "github.com/joelanford/kpm/internal/api/bundle/v1alpha1"
 )
 
 const MediaType = "registry+v1"
@@ -22,7 +18,6 @@ type Bundle struct {
 	metadata  metadata
 
 	csv v1alpha1.ClusterServiceVersion
-	id  bundlev1alpha1.ID
 }
 
 func LoadFS(fsys fs.FS) (*Bundle, error) {
@@ -74,7 +69,6 @@ func (b *Bundle) validate() error {
 func (b *Bundle) complete() error {
 	if err := do(
 		b.extractCSV,
-		b.populateID,
 	); err != nil {
 		return err
 	}
@@ -92,29 +86,6 @@ func (b *Bundle) extractCSV() error {
 			}
 		}
 	}
-	return nil
-}
-
-func (b *Bundle) populateID() error {
-	name := b.metadata.annotations.Annotations[AnnotationPackage]
-
-	csvVersion := b.csv.Spec.Version.Version
-	version := semver.Version{
-		Major: csvVersion.Major,
-		Minor: csvVersion.Minor,
-		Patch: csvVersion.Patch,
-		Pre:   csvVersion.Pre,
-	}
-	release := bundlev1alpha1.MustParseRelease("0")
-
-	if releaseStr := strings.Join(csvVersion.Build, "."); releaseStr != "" {
-		var err error
-		release, err = bundlev1alpha1.ParseRelease(releaseStr)
-		if err != nil {
-			return err
-		}
-	}
-	b.id = bundlev1alpha1.NewID(name, version, release)
 	return nil
 }
 

@@ -13,16 +13,14 @@ import (
 	"helm.sh/helm/v3/pkg/registry"
 	"oras.land/oras-go/v2"
 	"oras.land/oras-go/v2/content"
-
-	bundlev1alpha1 "github.com/joelanford/kpm/internal/api/bundle/v1alpha1"
 )
 
-func (p *Package) ID() bundlev1alpha1.ID {
-	return p.id
+func (ch *Chart) ID() string {
+	return fmt.Sprintf("%s-%s", ch.chrt.Metadata.Name, ch.chrt.Metadata.Version)
 }
 
-func (p *Package) MarshalOCI(ctx context.Context, pusher content.Pusher) (ocispec.Descriptor, error) {
-	config, layers, err := p.pushConfigAndLayers(ctx, pusher)
+func (ch *Chart) MarshalOCI(ctx context.Context, target oras.Target) (ocispec.Descriptor, error) {
+	config, layers, err := ch.pushConfigAndLayers(ctx, target)
 	if err != nil {
 		return ocispec.Descriptor{}, err
 	}
@@ -32,17 +30,26 @@ func (p *Package) MarshalOCI(ctx context.Context, pusher content.Pusher) (ocispe
 		MediaType:   ocispec.MediaTypeImageManifest,
 		Config:      config,
 		Layers:      layers,
-		Annotations: p.generateOCIAnnotations(),
+		Annotations: ch.generateOCIAnnotations(),
 	}
 	manifestData, err := json.Marshal(manifest)
 	if err != nil {
 		return ocispec.Descriptor{}, err
 	}
-	return oras.PushBytes(ctx, pusher, ocispec.MediaTypeImageManifest, manifestData)
+
+	desc, err := oras.PushBytes(ctx, target, ocispec.MediaTypeImageManifest, manifestData)
+	if err != nil {
+		return ocispec.Descriptor{}, fmt.Errorf("failed to push chart: %v", err)
+	}
+	tag := fmt.Sprintf("%s:%s", ch.chrt.Metadata.Name, ch.chrt.Metadata.Version)
+	if err := target.Tag(ctx, desc, tag); err != nil {
+		return ocispec.Descriptor{}, fmt.Errorf("failed to tag chart: %v", err)
+	}
+	return desc, nil
 }
 
-func (p *Package) pushConfigAndLayers(ctx context.Context, pusher content.Pusher) (ocispec.Descriptor, []ocispec.Descriptor, error) {
-	configData, err := json.Marshal(p.chrt.Metadata)
+func (ch *Chart) pushConfigAndLayers(ctx context.Context, pusher content.Pusher) (ocispec.Descriptor, []ocispec.Descriptor, error) {
+	configData, err := json.Marshal(ch.chrt.Metadata)
 	if err != nil {
 		return ocispec.Descriptor{}, nil, fmt.Errorf("failed to marshal chart metadata: %w", err)
 	}
@@ -52,14 +59,14 @@ func (p *Package) pushConfigAndLayers(ctx context.Context, pusher content.Pusher
 	}
 
 	var layerDescs []ocispec.Descriptor
-	chartDesc, err := oras.PushBytes(ctx, pusher, registry.ChartLayerMediaType, p.archiveData)
+	chartDesc, err := oras.PushBytes(ctx, pusher, registry.ChartLayerMediaType, ch.archiveData)
 	if err != nil {
 		return ocispec.Descriptor{}, nil, fmt.Errorf("failed to push chart data: %w", err)
 	}
 	layerDescs = append(layerDescs, chartDesc)
 
-	if len(p.provenanceData) > 0 {
-		provDesc, err := oras.PushBytes(ctx, pusher, registry.ProvLayerMediaType, p.provenanceData)
+	if len(ch.provenanceData) > 0 {
+		provDesc, err := oras.PushBytes(ctx, pusher, registry.ProvLayerMediaType, ch.provenanceData)
 		if err != nil {
 			return ocispec.Descriptor{}, nil, fmt.Errorf("failed to push provenance data: %w", err)
 		}
@@ -68,8 +75,8 @@ func (p *Package) pushConfigAndLayers(ctx context.Context, pusher content.Pusher
 	return configDesc, layerDescs, nil
 }
 
-func (p *Package) generateOCIAnnotations() map[string]string {
-	meta := p.chrt.Metadata
+func (ch *Chart) generateOCIAnnotations() map[string]string {
+	meta := ch.chrt.Metadata
 
 	annotations := maps.Clone(meta.Annotations)
 	if annotations == nil {

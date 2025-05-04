@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"io"
 
 	"github.com/opencontainers/go-digest"
@@ -14,16 +15,15 @@ import (
 	"oras.land/oras-go/v2"
 	"oras.land/oras-go/v2/content"
 
-	bundlev1alpha1 "github.com/joelanford/kpm/internal/api/bundle/v1alpha1"
 	"github.com/joelanford/kpm/internal/pkg/util/tar"
 )
 
-func (b *Bundle) ID() bundlev1alpha1.ID {
-	return b.id
+func (b *Bundle) ID() string {
+	return fmt.Sprintf("%s.v%s", b.metadata.annotations.Annotations[AnnotationPackage], b.csv.Spec.Version.String())
 }
 
-func (b *Bundle) MarshalOCI(ctx context.Context, pusher content.Pusher) (ocispec.Descriptor, error) {
-	config, layers, err := b.pushConfigAndLayers(ctx, pusher)
+func (b *Bundle) MarshalOCI(ctx context.Context, target oras.Target) (ocispec.Descriptor, error) {
+	config, layers, err := b.pushConfigAndLayers(ctx, target)
 	if err != nil {
 		return ocispec.Descriptor{}, err
 	}
@@ -38,7 +38,16 @@ func (b *Bundle) MarshalOCI(ctx context.Context, pusher content.Pusher) (ocispec
 	if err != nil {
 		return ocispec.Descriptor{}, err
 	}
-	return oras.PushBytes(ctx, pusher, ocispec.MediaTypeImageManifest, manifestData)
+
+	desc, err := oras.PushBytes(ctx, target, ocispec.MediaTypeImageManifest, manifestData)
+	if err != nil {
+		return ocispec.Descriptor{}, fmt.Errorf("failed to push bundle: %v", err)
+	}
+	tag := fmt.Sprintf("%s:%s", b.metadata.annotations.Annotations[AnnotationPackage], b.csv.Spec.Version)
+	if err := target.Tag(ctx, desc, tag); err != nil {
+		return ocispec.Descriptor{}, fmt.Errorf("failed to tag bundle: %v", err)
+	}
+	return desc, nil
 }
 
 func (b *Bundle) pushConfigAndLayers(ctx context.Context, pusher content.Pusher) (ocispec.Descriptor, []ocispec.Descriptor, error) {

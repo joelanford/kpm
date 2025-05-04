@@ -6,17 +6,13 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/blang/semver/v4"
 	"golang.org/x/crypto/openpgp/clearsign"
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chart/loader"
-
-	bundlev1alpha1 "github.com/joelanford/kpm/internal/api/bundle/v1alpha1"
 )
 
-type Package struct {
+type Chart struct {
 	archiveFile string
-	id          bundlev1alpha1.ID
 
 	archiveData []byte
 	chrt        *chart.Chart
@@ -24,12 +20,11 @@ type Package struct {
 	provenanceData []byte
 }
 
-func LoadPackage(archiveFile string) (*Package, error) {
-	p := &Package{archiveFile: archiveFile}
+func LoadPackage(archiveFile string) (*Chart, error) {
+	p := &Chart{archiveFile: archiveFile}
 	for _, fn := range []func() error{
 		p.load,
 		p.validate,
-		p.complete,
 	} {
 		if err := fn(); err != nil {
 			return nil, err
@@ -38,85 +33,62 @@ func LoadPackage(archiveFile string) (*Package, error) {
 	return p, nil
 }
 
-func (p *Package) load() error {
+func (ch *Chart) load() error {
 	if err := do(
-		p.loadArchiveFile,
-		p.loadProvenanceFile,
+		ch.loadArchiveFile,
+		ch.loadProvenanceFile,
 	); err != nil {
-		return fmt.Errorf("failed to load package %q: %w", p.archiveFile, err)
+		return fmt.Errorf("failed to load package %q: %w", ch.archiveFile, err)
 	}
 	return nil
 }
 
-func (p *Package) loadArchiveFile() error {
-	archiveData, err := os.ReadFile(p.archiveFile)
+func (ch *Chart) loadArchiveFile() error {
+	archiveData, err := os.ReadFile(ch.archiveFile)
 	if err != nil {
 		return fmt.Errorf("failed to open chart archive: %w", err)
 	}
 
-	ch, err := loader.LoadArchive(bytes.NewReader(archiveData))
+	chrt, err := loader.LoadArchive(bytes.NewReader(archiveData))
 	if err != nil {
 		return fmt.Errorf("failed to load chart archive: %w", err)
 	}
-	p.chrt = ch
-	p.archiveData = archiveData
+	ch.chrt = chrt
+	ch.archiveData = archiveData
 	return nil
 }
 
-func (p *Package) loadProvenanceFile() error {
-	provenanceData, err := os.ReadFile(fmt.Sprintf("%s.prov", p.archiveFile))
+func (ch *Chart) loadProvenanceFile() error {
+	provenanceData, err := os.ReadFile(fmt.Sprintf("%s.prov", ch.archiveFile))
 	if err != nil {
 		return fmt.Errorf("failed to read provenance file: %w", err)
 	}
-	p.provenanceData = provenanceData
+	ch.provenanceData = provenanceData
 	return nil
 }
 
-func (p *Package) validate() error {
+func (ch *Chart) validate() error {
 	if err := do(
-		p.validateChart,
-		p.validateProvenance,
+		ch.validateChart,
+		ch.validateProvenance,
 	); err != nil {
 		return fmt.Errorf("failed to validate chart: %v", err)
 	}
 	return nil
 }
 
-func (p *Package) validateChart() error {
-	if err := p.chrt.Validate(); err != nil {
+func (ch *Chart) validateChart() error {
+	if err := ch.chrt.Validate(); err != nil {
 		return fmt.Errorf("failed to validate chart: %w", err)
 	}
 	return nil
 }
 
-func (p *Package) validateProvenance() error {
-	block, _ := clearsign.Decode(p.provenanceData)
+func (ch *Chart) validateProvenance() error {
+	block, _ := clearsign.Decode(ch.provenanceData)
 	if block == nil {
 		return fmt.Errorf("failed to validate provenance file: signature block not found")
 	}
-	return nil
-}
-
-func (p *Package) complete() error {
-	if err := do(
-		p.populateID,
-	); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (p *Package) populateID() error {
-	verStr := p.chrt.Metadata.Version
-	ver, err := semver.Parse(verStr)
-	if err != nil {
-		return fmt.Errorf("failed to parse chart version %q as semver: %w", verStr, err)
-	}
-	p.id = bundlev1alpha1.NewID(
-		p.chrt.Metadata.Name,
-		ver,
-		bundlev1alpha1.MustParseRelease("0"),
-	)
 	return nil
 }
 

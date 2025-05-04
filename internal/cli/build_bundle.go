@@ -41,7 +41,7 @@ func BuildBundle() *cobra.Command {
 			}
 
 			fmt.Printf("Bundle %s written to %s (digest: %s)\n",
-				report.ID.UnqualifiedReference(),
+				report.ID,
 				report.OutputFile,
 				report.Descriptor.Digest,
 			)
