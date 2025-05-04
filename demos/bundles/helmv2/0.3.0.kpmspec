@@ -1,0 +1,8 @@
+# nonk8s
+apiVersion: specs.kpm.io/v1alpha1
+kind: HelmV2
+
+source:
+  sourceType: ChartArchive
+  chartArchive:
+    archivePath: ./0.3.0/nginx-0.3.0.tgz
