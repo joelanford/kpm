@@ -15,8 +15,20 @@ import (
 	"oras.land/oras-go/v2/content"
 )
 
+func (ch *Chart) name() string {
+	return ch.chrt.Metadata.Name
+}
+
+func (ch *Chart) tag() string {
+	return ch.chrt.Metadata.Version
+}
+
 func (ch *Chart) ID() string {
-	return fmt.Sprintf("%s-%s", ch.chrt.Metadata.Name, ch.chrt.Metadata.Version)
+	return fmt.Sprintf("%s-%s", ch.name(), ch.tag())
+}
+
+func (ch *Chart) imageNameTag() string {
+	return fmt.Sprintf("%s:%s", ch.name(), ch.tag())
 }
 
 func (ch *Chart) MarshalOCI(ctx context.Context, target oras.Target) (ocispec.Descriptor, error) {
@@ -41,8 +53,7 @@ func (ch *Chart) MarshalOCI(ctx context.Context, target oras.Target) (ocispec.De
 	if err != nil {
 		return ocispec.Descriptor{}, fmt.Errorf("failed to push chart: %v", err)
 	}
-	tag := fmt.Sprintf("%s:%s", ch.chrt.Metadata.Name, ch.chrt.Metadata.Version)
-	if err := target.Tag(ctx, desc, tag); err != nil {
+	if err := target.Tag(ctx, desc, ch.imageNameTag()); err != nil {
 		return ocispec.Descriptor{}, fmt.Errorf("failed to tag chart: %v", err)
 	}
 	return desc, nil

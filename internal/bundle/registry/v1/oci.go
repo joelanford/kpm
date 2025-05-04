@@ -18,8 +18,20 @@ import (
 	"github.com/joelanford/kpm/internal/pkg/util/tar"
 )
 
+func (b *Bundle) name() string {
+	return b.metadata.annotations.Annotations[AnnotationPackage]
+}
+
+func (b *Bundle) tag() string {
+	return b.csv.Spec.Version.String()
+}
+
 func (b *Bundle) ID() string {
-	return fmt.Sprintf("%s.v%s", b.metadata.annotations.Annotations[AnnotationPackage], b.csv.Spec.Version.String())
+	return fmt.Sprintf("%s.v%s", b.name(), b.tag())
+}
+
+func (b *Bundle) imageNameTag() string {
+	return fmt.Sprintf("%s:%s", b.name(), b.tag())
 }
 
 func (b *Bundle) MarshalOCI(ctx context.Context, target oras.Target) (ocispec.Descriptor, error) {
@@ -43,8 +55,7 @@ func (b *Bundle) MarshalOCI(ctx context.Context, target oras.Target) (ocispec.De
 	if err != nil {
 		return ocispec.Descriptor{}, fmt.Errorf("failed to push bundle: %v", err)
 	}
-	tag := fmt.Sprintf("%s:%s", b.metadata.annotations.Annotations[AnnotationPackage], b.csv.Spec.Version)
-	if err := target.Tag(ctx, desc, tag); err != nil {
+	if err := target.Tag(ctx, desc, b.imageNameTag()); err != nil {
 		return ocispec.Descriptor{}, fmt.Errorf("failed to tag bundle: %v", err)
 	}
 	return desc, nil
