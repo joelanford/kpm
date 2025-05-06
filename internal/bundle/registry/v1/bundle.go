@@ -70,7 +70,7 @@ func (b *Bundle) complete() error {
 	if err := do(
 		b.extractCSV,
 	); err != nil {
-		return err
+		return fmt.Errorf("failed to complete bundle: %v", err)
 	}
 	return nil
 }
@@ -82,11 +82,13 @@ func (b *Bundle) extractCSV() error {
 				continue
 			}
 			if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.Object, &b.csv); err != nil {
-				return fmt.Errorf("failed to parse %s from file %s: %v", v1alpha1.ClusterServiceVersionKind, mf.filename, err)
+				return fmt.Errorf("failed to parse %s from file %q: %v", v1alpha1.ClusterServiceVersionKind, mf.filename, err)
 			}
+			return nil
 		}
 	}
-	return nil
+	// this should never happen because the earlier validate step ensures there is exactly one CSV in the manifests.
+	return fmt.Errorf("failed to find ClusterServiceVersion in bundle")
 }
 
 func do(funcs ...func() error) error {

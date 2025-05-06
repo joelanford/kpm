@@ -10,10 +10,10 @@ import (
 	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/cli-runtime/pkg/resource"
 
 	"github.com/operator-framework/api/pkg/operators/v1alpha1"
-	"github.com/operator-framework/operator-registry/pkg/lib/bundle"
 )
 
 const ManifestsDirectory = "manifests/"
@@ -41,16 +41,19 @@ func (m *manifests) load() error {
 		m.manifestFiles = append(m.manifestFiles, *mf)
 		return nil
 	}); err != nil {
-		return err
+		panic("programmer error: walk function should have collected error, not returned it. Error: " + err.Error())
 	}
-	return errors.Join(loadErrs...)
+	if err := errors.Join(loadErrs...); err != nil {
+		return fmt.Errorf("failed to load manifests: %v", err)
+	}
+	return nil
 }
 
 func (m *manifests) validate() error {
 	var validationErrors []error
 	for _, validationFn := range []func() error{
 		m.validateNoSubDirectories,
-		m.validateOneManifestPerFile,
+		m.validateOneObjectPerFile,
 		m.validateExactlyOneCSV,
 		m.validateSupportedKinds,
 	} {
@@ -58,7 +61,10 @@ func (m *manifests) validate() error {
 			validationErrors = append(validationErrors, err)
 		}
 	}
-	return errors.Join(validationErrors...)
+	if err := errors.Join(validationErrors...); err != nil {
+		return fmt.Errorf("invalid registry+v1 manifests: %v", err)
+	}
+	return nil
 }
 
 func (m *manifests) validateNoSubDirectories() error {
@@ -73,7 +79,7 @@ func (m *manifests) validateNoSubDirectories() error {
 	return fmt.Errorf("found subdirectories %v: subdirectories not allowed", slices.Sorted(maps.Keys(foundSubDirectories)))
 }
 
-func (m *manifests) validateOneManifestPerFile() error {
+func (m *manifests) validateOneObjectPerFile() error {
 	var invalidFiles []string
 	for _, mf := range m.manifestFiles {
 		if len(mf.objects) != 1 {
@@ -81,7 +87,7 @@ func (m *manifests) validateOneManifestPerFile() error {
 		}
 	}
 	if len(invalidFiles) > 0 {
-		return fmt.Errorf("found files with invalid number of objects: %v", strings.Join(invalidFiles, ", "))
+		return fmt.Errorf("manifest files must contain exactly one object: %v", strings.Join(invalidFiles, ", "))
 	}
 	return nil
 }
@@ -111,15 +117,40 @@ func (m *manifests) validateExactlyOneCSV() error {
 	return nil
 }
 
+var supportedKinds = sets.New[string](
+	v1alpha1.ClusterServiceVersionKind,
+	"CustomResourceDefinition",
+	"Secret",
+	"ClusterRole",
+	"ClusterRoleBinding",
+	"ConfigMap",
+	"ServiceAccount",
+	"Service",
+	"Role",
+	"RoleBinding",
+	"PrometheusRule",
+	"ServiceMonitor",
+	"PodDisruptionBudget",
+	"PriorityClass",
+	"VerticalPodAutoscaler",
+	"ConsoleYAMLSample",
+	"ConsoleQuickStart",
+	"ConsoleCLIDownload",
+	"ConsoleLink",
+)
+
 func (m *manifests) validateSupportedKinds() error {
 	var unsupported []string
 	for _, mf := range m.manifestFiles {
+		fileUnsupported := sets.New[string]()
 		for _, obj := range mf.objects {
 			kind := obj.GroupVersionKind().Kind
-			supported, _ := bundle.IsSupported(kind)
-			if !supported {
-				unsupported = append(unsupported, fmt.Sprintf("kind %q in %q", kind))
+			if !supportedKinds.Has(kind) {
+				fileUnsupported.Insert(kind)
 			}
+		}
+		if len(fileUnsupported) > 0 {
+			unsupported = append(unsupported, fmt.Sprintf("file %q contains %v", mf.filename, sets.List(fileUnsupported)))
 		}
 	}
 	if len(unsupported) > 0 {
@@ -145,6 +176,9 @@ func newManifestFile(fsys fs.FS, path string) (*manifestFile, error) {
 		errs []error
 	)
 	res := resource.NewLocalBuilder().Flatten().Unstructured().Stream(file, path).Do()
+	if err := res.Err(); err != nil {
+		errs = append(errs, err)
+	}
 	if err := res.Visit(func(info *resource.Info, err error) error {
 		if err != nil {
 			errs = append(errs, err)

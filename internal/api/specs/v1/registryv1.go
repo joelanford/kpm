@@ -12,7 +12,7 @@ const (
 
 type RegistryV1 struct {
 	metav1.TypeMeta `json:",inline"`
-	
+
 	Source RegistryV1Source `json:"source"`
 }
 

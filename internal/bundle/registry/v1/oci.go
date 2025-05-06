@@ -19,7 +19,7 @@ import (
 )
 
 func (b *Bundle) name() string {
-	return b.metadata.annotations.Annotations[AnnotationPackage]
+	return b.metadata.annotationsFile.Annotations[AnnotationPackage]
 }
 
 func (b *Bundle) tag() string {
@@ -76,7 +76,7 @@ func (b *Bundle) pushConfigAndLayers(ctx context.Context, pusher content.Pusher)
 
 	cfg := ocispec.Image{
 		Config: ocispec.ImageConfig{
-			Labels: b.metadata.annotations.Annotations,
+			Labels: b.metadata.annotationsFile.Annotations,
 		},
 		RootFS: ocispec.RootFS{
 			Type: "layers",
