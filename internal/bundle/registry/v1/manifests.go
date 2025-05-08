@@ -9,11 +9,20 @@ import (
 	"slices"
 	"strings"
 
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	consolev1 "github.com/openshift/api/console/v1"
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
+	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	schedulingv1 "k8s.io/api/scheduling/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
+	autoscalingv1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/cli-runtime/pkg/resource"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/operator-framework/api/pkg/operators/v1alpha1"
+	ofv1alpha1 "github.com/operator-framework/api/pkg/operators/v1alpha1"
 )
 
 const ManifestsDirectory = "manifests/"
@@ -97,14 +106,14 @@ func (m *manifests) validateExactlyOneCSV() error {
 	foundCSVs := map[string]int{}
 	for _, mf := range m.manifestFiles {
 		for _, o := range mf.objects {
-			if o.GroupVersionKind().Kind == v1alpha1.ClusterServiceVersionKind {
+			if o.GetObjectKind().GroupVersionKind().Kind == ofv1alpha1.ClusterServiceVersionKind {
 				totalCount++
 				foundCSVs[mf.filename]++
 			}
 		}
 	}
 	if totalCount == 0 {
-		return fmt.Errorf("exactly one %s object is required, found 0", v1alpha1.ClusterServiceVersionKind)
+		return fmt.Errorf("exactly one %s object is required, found 0", ofv1alpha1.ClusterServiceVersionKind)
 	}
 	if totalCount > 1 {
 		counts := make([]string, 0, len(foundCSVs))
@@ -112,39 +121,76 @@ func (m *manifests) validateExactlyOneCSV() error {
 			csvCount := foundCSVs[filename]
 			counts = append(counts, fmt.Sprintf("%q has %d", filename, csvCount))
 		}
-		return fmt.Errorf("exactly one %s object is required, found %d: %v", v1alpha1.ClusterServiceVersionKind, totalCount, strings.Join(counts, ", "))
+		return fmt.Errorf("exactly one %s object is required, found %d: %v", ofv1alpha1.ClusterServiceVersionKind, totalCount, strings.Join(counts, ", "))
 	}
 	return nil
 }
 
 var supportedKinds = sets.New[string](
-	v1alpha1.ClusterServiceVersionKind,
-	"CustomResourceDefinition",
+	// corev1
+	"ConfigMap",
 	"Secret",
+	"Service",
+	"ServiceAccount",
+
+	// apiextensionsv1
+	"CustomResourceDefinition",
+
+	// rbacv1
 	"ClusterRole",
 	"ClusterRoleBinding",
-	"ConfigMap",
-	"ServiceAccount",
-	"Service",
 	"Role",
 	"RoleBinding",
+
+	// ofv1alpha1
+	ofv1alpha1.ClusterServiceVersionKind,
+
+	// schedulingv1
+	"PriorityClass",
+
+	// policyv1
+	"PodDisruptionBudget",
+
+	// autoscalingv1
+	"VerticalPodAutoscaler",
+
+	// monitoringv1
 	"PrometheusRule",
 	"ServiceMonitor",
-	"PodDisruptionBudget",
-	"PriorityClass",
-	"VerticalPodAutoscaler",
+
+	// console
 	"ConsoleYAMLSample",
 	"ConsoleQuickStart",
 	"ConsoleCLIDownload",
 	"ConsoleLink",
 )
 
+func initScheme() *runtime.Scheme {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = apiextensionsv1.AddToScheme(scheme)
+	_ = rbacv1.AddToScheme(scheme)
+	_ = ofv1alpha1.AddToScheme(scheme)
+	_ = schedulingv1.AddToScheme(scheme)
+	_ = policyv1.AddToScheme(scheme)
+	_ = autoscalingv1.AddToScheme(scheme)
+	_ = monitoringv1.AddToScheme(scheme)
+	_ = consolev1.AddToScheme(scheme)
+	return scheme
+}
+
+var supportedKindsScheme *runtime.Scheme
+
+func init() {
+	supportedKindsScheme = initScheme()
+}
+
 func (m *manifests) validateSupportedKinds() error {
 	var unsupported []string
 	for _, mf := range m.manifestFiles {
 		fileUnsupported := sets.New[string]()
 		for _, obj := range mf.objects {
-			kind := obj.GroupVersionKind().Kind
+			kind := obj.GetObjectKind().GroupVersionKind().Kind
 			if !supportedKinds.Has(kind) {
 				fileUnsupported.Insert(kind)
 			}
@@ -161,7 +207,7 @@ func (m *manifests) validateSupportedKinds() error {
 
 type manifestFile struct {
 	filename string
-	objects  []*unstructured.Unstructured
+	objects  []client.Object
 }
 
 func newManifestFile(fsys fs.FS, path string) (*manifestFile, error) {
@@ -175,7 +221,7 @@ func newManifestFile(fsys fs.FS, path string) (*manifestFile, error) {
 		m    = &manifestFile{filename: path}
 		errs []error
 	)
-	res := resource.NewLocalBuilder().Flatten().Unstructured().Stream(file, path).Do()
+	res := resource.NewLocalBuilder().WithScheme(supportedKindsScheme, supportedKindsScheme.PrioritizedVersionsAllGroups()...).Flatten().Stream(file, path).Do()
 	if err := res.Err(); err != nil {
 		errs = append(errs, err)
 	}
@@ -184,7 +230,7 @@ func newManifestFile(fsys fs.FS, path string) (*manifestFile, error) {
 			errs = append(errs, err)
 			return nil
 		}
-		m.objects = append(m.objects, info.Object.(*unstructured.Unstructured))
+		m.objects = append(m.objects, info.Object.(client.Object))
 		return nil
 	}); err != nil {
 		return nil, err

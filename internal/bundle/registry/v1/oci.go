@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 
@@ -35,6 +36,9 @@ func (b *Bundle) imageNameTag() string {
 }
 
 func (b *Bundle) MarshalOCI(ctx context.Context, target oras.Target) (ocispec.Descriptor, error) {
+	if b == nil || b.fsys == nil {
+		return ocispec.Descriptor{}, errors.New("cannot marshal uninitialized bundle")
+	}
 	config, layers, err := b.pushConfigAndLayers(ctx, target)
 	if err != nil {
 		return ocispec.Descriptor{}, err

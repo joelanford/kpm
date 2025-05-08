@@ -7,9 +7,11 @@ import (
 	"testing/fstest"
 
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/operator-framework/api/pkg/operators/v1alpha1"
 )
@@ -32,7 +34,7 @@ kind: ClusterServiceVersion
 				},
 			},
 			expected: []manifestFile{
-				{filename: "csv.yaml", objects: []*unstructured.Unstructured{makeUnstructured(v1alpha1.SchemeGroupVersion.WithKind("ClusterServiceVersion"))}},
+				{filename: "csv.yaml", objects: []client.Object{&v1alpha1.ClusterServiceVersion{TypeMeta: metav1.TypeMeta{Kind: "ClusterServiceVersion", APIVersion: "operators.coreos.com/v1alpha1"}}}},
 			},
 			assertErr: require.NoError,
 		},
@@ -109,18 +111,18 @@ func Test_manifests_validateOneObjectPerFile(t *testing.T) {
 		{
 			name: "one object per file is valid",
 			manifestFiles: []manifestFile{
-				{filename: "manifest1.yaml", objects: make([]*unstructured.Unstructured, 1)},
-				{filename: "manifest2.yaml", objects: make([]*unstructured.Unstructured, 1)},
+				{filename: "manifest1.yaml", objects: make([]client.Object, 1)},
+				{filename: "manifest2.yaml", objects: make([]client.Object, 1)},
 			},
 			assertErr: require.NoError,
 		},
 		{
 			name: "manifests with multiple objects are invalid",
 			manifestFiles: []manifestFile{
-				{filename: "manifest1.yaml", objects: make([]*unstructured.Unstructured, 1)},
-				{filename: "manifest2.yaml", objects: make([]*unstructured.Unstructured, 1)},
-				{filename: "manifest3.yaml", objects: make([]*unstructured.Unstructured, 2)},
-				{filename: "manifest4.yaml", objects: make([]*unstructured.Unstructured, 3)},
+				{filename: "manifest1.yaml", objects: make([]client.Object, 1)},
+				{filename: "manifest2.yaml", objects: make([]client.Object, 1)},
+				{filename: "manifest3.yaml", objects: make([]client.Object, 2)},
+				{filename: "manifest4.yaml", objects: make([]client.Object, 3)},
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, "manifest files must contain exactly one object")
@@ -131,10 +133,10 @@ func Test_manifests_validateOneObjectPerFile(t *testing.T) {
 		{
 			name: "manifests with no objects are invalid",
 			manifestFiles: []manifestFile{
-				{filename: "manifest1.yaml", objects: make([]*unstructured.Unstructured, 1)},
-				{filename: "manifest2.yaml", objects: make([]*unstructured.Unstructured, 1)},
-				{filename: "manifest3.yaml", objects: make([]*unstructured.Unstructured, 0)},
-				{filename: "manifest4.yaml", objects: make([]*unstructured.Unstructured, 0)},
+				{filename: "manifest1.yaml", objects: make([]client.Object, 1)},
+				{filename: "manifest2.yaml", objects: make([]client.Object, 1)},
+				{filename: "manifest3.yaml", objects: make([]client.Object, 0)},
+				{filename: "manifest4.yaml", objects: make([]client.Object, 0)},
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, "manifest files must contain exactly one object")
@@ -155,8 +157,8 @@ func Test_manifests_validateOneObjectPerFile(t *testing.T) {
 }
 
 func Test_manifests_validateExactlyOneCSV(t *testing.T) {
-	other := makeUnstructured(schema.GroupVersionKind{Group: "example.com", Version: "v1alpha1", Kind: "Other"})
-	csv := makeUnstructured(v1alpha1.SchemeGroupVersion.WithKind(v1alpha1.ClusterServiceVersionKind))
+	other := makeObject(schema.GroupVersionKind{Group: "example.com", Version: "v1alpha1", Kind: "Other"})
+	csv := makeObject(v1alpha1.SchemeGroupVersion.WithKind(v1alpha1.ClusterServiceVersionKind))
 
 	tests := []struct {
 		name          string
@@ -166,17 +168,17 @@ func Test_manifests_validateExactlyOneCSV(t *testing.T) {
 		{
 			name: "exactly one csv among all files is valid",
 			manifestFiles: []manifestFile{
-				{filename: "manifest1.yaml", objects: []*unstructured.Unstructured{other}},
-				{filename: "manifest2.yaml", objects: []*unstructured.Unstructured{other}},
-				{filename: "csv1.yaml", objects: []*unstructured.Unstructured{csv}},
+				{filename: "manifest1.yaml", objects: []client.Object{other}},
+				{filename: "manifest2.yaml", objects: []client.Object{other}},
+				{filename: "csv1.yaml", objects: []client.Object{csv}},
 			},
 			assertErr: require.NoError,
 		},
 		{
 			name: "zero csvs among all files is invalid",
 			manifestFiles: []manifestFile{
-				{filename: "manifest1.yaml", objects: []*unstructured.Unstructured{other}},
-				{filename: "manifest2.yaml", objects: []*unstructured.Unstructured{other}},
+				{filename: "manifest1.yaml", objects: []client.Object{other}},
+				{filename: "manifest2.yaml", objects: []client.Object{other}},
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, "exactly one ClusterServiceVersion object is required, found 0")
@@ -193,10 +195,10 @@ func Test_manifests_validateExactlyOneCSV(t *testing.T) {
 		{
 			name: "multiple csvs among all files is invalid",
 			manifestFiles: []manifestFile{
-				{filename: "manifest1.yaml", objects: []*unstructured.Unstructured{other}},
-				{filename: "manifest2.yaml", objects: []*unstructured.Unstructured{other}},
-				{filename: "csv1.yaml", objects: []*unstructured.Unstructured{csv}},
-				{filename: "csv2.yaml", objects: []*unstructured.Unstructured{csv}},
+				{filename: "manifest1.yaml", objects: []client.Object{other}},
+				{filename: "manifest2.yaml", objects: []client.Object{other}},
+				{filename: "csv1.yaml", objects: []client.Object{csv}},
+				{filename: "csv2.yaml", objects: []client.Object{csv}},
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, "exactly one ClusterServiceVersion object is required, found 2")
@@ -262,12 +264,12 @@ func Test_manifests_validate(t *testing.T) {
 		{
 			name: "validate collects suberrors",
 			manifestFiles: []manifestFile{
-				{filename: "subdir/service.yaml", objects: []*unstructured.Unstructured{
-					makeUnstructured(schema.GroupVersionKind{Version: "v1", Kind: "Service"}),
+				{filename: "subdir/service.yaml", objects: []client.Object{
+					makeObject(schema.GroupVersionKind{Version: "v1", Kind: "Service"}),
 				}},
 				{filename: "no_objects.yaml", objects: nil},
-				{filename: "unsupported.yaml", objects: []*unstructured.Unstructured{
-					makeUnstructured(schema.GroupVersionKind{Group: "example.com", Version: "v1alpha1", Kind: "Unsupported"}),
+				{filename: "unsupported.yaml", objects: []client.Object{
+					makeObject(schema.GroupVersionKind{Group: "example.com", Version: "v1alpha1", Kind: "Unsupported"}),
 				}},
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
@@ -289,19 +291,22 @@ func Test_manifests_validate(t *testing.T) {
 	}
 }
 
-func makeUnstructured(gvk schema.GroupVersionKind) *unstructured.Unstructured {
-	obj := &unstructured.Unstructured{}
-	obj.SetGroupVersionKind(gvk)
-	return obj
+func makeObject(gvk schema.GroupVersionKind) client.Object {
+	obj, _ := supportedKindsScheme.New(gvk)
+	if obj == nil {
+		obj = &unstructured.Unstructured{}
+	}
+	obj.GetObjectKind().SetGroupVersionKind(gvk)
+	return obj.(client.Object)
 }
 
 func unsupportedManifestFiles() []manifestFile {
-	unsupported1 := makeUnstructured(schema.GroupVersionKind{Group: "example.com", Version: "v1alpha1", Kind: "Unsupported1"})
-	unsupported2 := makeUnstructured(schema.GroupVersionKind{Group: "example.com", Version: "v1alpha1", Kind: "Unsupported2"})
+	unsupported1 := makeObject(schema.GroupVersionKind{Group: "example.com", Version: "v1alpha1", Kind: "Unsupported1"})
+	unsupported2 := makeObject(schema.GroupVersionKind{Group: "example.com", Version: "v1alpha1", Kind: "Unsupported2"})
 
 	return []manifestFile{
-		{filename: "Unsupported1.yaml", objects: []*unstructured.Unstructured{unsupported1}},
-		{filename: "Unsupported2.yaml", objects: []*unstructured.Unstructured{unsupported2}},
+		{filename: "Unsupported1.yaml", objects: []client.Object{unsupported1}},
+		{filename: "Unsupported2.yaml", objects: []client.Object{unsupported2}},
 	}
 }
 
@@ -309,8 +314,8 @@ func supportedManifestFiles() []manifestFile {
 	kinds := sets.List(supportedKinds)
 	manifestFiles := make([]manifestFile, 0, len(kinds))
 	for _, kind := range kinds {
-		obj := makeUnstructured(schema.GroupVersionKind{Group: "example.com", Version: "v1alpha1", Kind: kind})
-		manifestFiles = append(manifestFiles, manifestFile{filename: fmt.Sprintf("%s.yaml", kind), objects: []*unstructured.Unstructured{obj}})
+		obj := makeObject(schema.GroupVersionKind{Group: "example.com", Version: "v1alpha1", Kind: kind})
+		manifestFiles = append(manifestFiles, manifestFile{filename: fmt.Sprintf("%s.yaml", kind), objects: []client.Object{obj}})
 	}
 	return manifestFiles
 }

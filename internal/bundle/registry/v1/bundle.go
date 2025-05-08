@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"io/fs"
 
-	"k8s.io/apimachinery/pkg/runtime"
-
 	"github.com/operator-framework/api/pkg/operators/v1alpha1"
 )
 
@@ -78,12 +76,11 @@ func (b *Bundle) complete() error {
 func (b *Bundle) extractCSV() error {
 	for _, mf := range b.manifests.manifestFiles {
 		for _, obj := range mf.objects {
-			if obj.GroupVersionKind().Kind != v1alpha1.ClusterServiceVersionKind {
+			if obj.GetObjectKind().GroupVersionKind().Kind != v1alpha1.ClusterServiceVersionKind {
 				continue
 			}
-			if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.Object, &b.csv); err != nil {
-				return fmt.Errorf("failed to parse %s from file %q: %v", v1alpha1.ClusterServiceVersionKind, mf.filename, err)
-			}
+			csv := obj.(*v1alpha1.ClusterServiceVersion)
+			b.csv = *csv
 			return nil
 		}
 	}
