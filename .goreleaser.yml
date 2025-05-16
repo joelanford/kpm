@@ -15,7 +15,6 @@ builds:
   - linux_arm64
   - linux_s390x
   - linux_ppc64le
-  - windows_amd64
 
 checksum:
   name_template: "checksums.txt"
