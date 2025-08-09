@@ -27,7 +27,7 @@ go install github.com/joelanford/kpm@latest
        path: ./bundle
    EOF
    
-   $ kpm build bundle ./bundle.kpmspec.yaml
+   $ kpm build ./bundle.kpmspec.yaml
    Bundle my-operator.v0.1.0 written to my-operator.v0.1.0.kpm (digest: sha256:ebd8006b0bee0e1b0b26b313b21213229c436498a6ad023d3bbb561abfccb815)
    ```
 

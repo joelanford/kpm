@@ -1,6 +1,6 @@
 .PHONY: all
 all:
-	ls *.kpmspec.yaml | xargs -n1 kpm build bundle
+	ls *.kpmspec.yaml | xargs -n1 kpm build
 
 .PHONY:
 clean:
