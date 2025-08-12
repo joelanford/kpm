@@ -102,6 +102,11 @@ func AddFS(tw *tar.Writer, fsys fs.FS) error {
 		h.Gid = 0
 		h.Uname = ""
 		h.Gname = ""
+
+		h.Mode = 0600
+		if d.IsDir() {
+			h.Mode = 0700
+		}
 		/* MODIFICATION STARTS HERE */
 
 		if err := tw.WriteHeader(h); err != nil {

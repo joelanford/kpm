@@ -48,7 +48,7 @@ annotations:
 				//
 				//   If you need to change something in the bundle, there should be a PR
 				//   where the only changes are in the input/output of this test.
-				Digest: digest.NewDigestFromEncoded(digest.SHA256, "02ac6235734e1f22385fa3b42c77076099ae4e5f930fb2e227186d49bdf1b916"),
+				Digest: digest.NewDigestFromEncoded(digest.SHA256, "7aff8e3aa41d7aef60557437aceeda0ea1c091c3b571acba4fc38c653b197868"),
 				Size:   401,
 			},
 			assertErr: require.NoError,
