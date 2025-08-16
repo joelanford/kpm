@@ -30,6 +30,9 @@ func loadRegistryV1(spec specsv1.RegistryV1, workingDir string) (Spec, error) {
 	case specsv1.RegistryV1SourceTypeBundleDirectory:
 		l := registryv1.NewBundleFSLoader(os.DirFS(filepath.Join(workingDir, spec.Source.BundleDirectory.Path)))
 		return l.Load()
+	case specsv1.RegistryV1SourceTypeGenerate:
+		l := registryv1.NewGenerateLoader(os.DirFS(workingDir), *spec.Source.Generate)
+		return l.Load()
 	default:
 		return nil, fmt.Errorf("unknown source type: %q", spec.Source.SourceType)
 	}
