@@ -1,97 +1,152 @@
 package v1
 
 import (
+	"bytes"
+	"compress/gzip"
+	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"path/filepath"
+	"testing/fstest"
 
-	"github.com/operator-framework/api/pkg/operators/v1alpha1"
+	"github.com/opencontainers/go-digest"
+	"github.com/opencontainers/image-spec/specs-go"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"oras.land/oras-go/v2"
+	"oras.land/oras-go/v2/content"
+
+	"github.com/joelanford/kpm/internal/pkg/util/tar"
 )
 
-const MediaType = "registry+v1"
+const (
+	mediaType          = "registry+v1"
+	manifestsDirectory = "manifests/"
+	metadataDirectory  = "metadata/"
+)
 
 type Bundle struct {
-	fsys      fs.FS
-	manifests manifests
-	metadata  metadata
-
-	csv v1alpha1.ClusterServiceVersion
+	manifests *manifests
+	metadata  *metadata
 }
 
-func LoadFS(fsys fs.FS) (*Bundle, error) {
-	metadataFsys, err := fs.Sub(fsys, "metadata")
-	if err != nil {
+type BundleLoader interface {
+	Load() (*Bundle, error)
+}
+
+type bundleFSLoader struct {
+	fsys fs.FS
+}
+
+func NewBundleFSLoader(fsys fs.FS) BundleLoader {
+	return &bundleFSLoader{fsys: fsys}
+}
+
+func (b *bundleFSLoader) Load() (*Bundle, error) {
+	manifestsFS, manifestsFSErr := fs.Sub(b.fsys, filepath.Clean(manifestsDirectory))
+	metadataFS, metadataFSErr := fs.Sub(b.fsys, filepath.Clean(metadataDirectory))
+	if err := errors.Join(manifestsFSErr, metadataFSErr); err != nil {
 		return nil, err
 	}
-	manifestsFsys, err := fs.Sub(fsys, "manifests")
-	if err != nil {
+
+	manifestsLoader := &manifestsFSLoader{manifestsFS}
+	metadataLoader := &metadataFSLoader{metadataFS}
+
+	bundleManifests, manifestsErr := manifestsLoader.Load()
+	bundleMetadata, metadataErr := metadataLoader.Load()
+	if err := errors.Join(manifestsErr, metadataErr); err != nil {
 		return nil, err
 	}
-	b := &Bundle{
-		fsys:      fsys,
-		metadata:  metadata{fsys: metadataFsys},
-		manifests: manifests{fsys: manifestsFsys},
-	}
-	for _, fn := range []func() error{
-		b.load,
-		b.validate,
-		b.complete,
-	} {
-		if err := fn(); err != nil {
-			return nil, err
-		}
-	}
-	return b, nil
+
+	return &Bundle{manifests: bundleManifests, metadata: bundleMetadata}, nil
 }
 
-func (b *Bundle) load() error {
-	if err := do(
-		b.metadata.load,
-		b.manifests.load,
-	); err != nil {
-		return fmt.Errorf("failed to load bundle: %v", err)
-	}
-	return nil
+func (b *Bundle) tag() string {
+	return b.manifests.CSV().Value().Spec.Version.String()
 }
 
-func (b *Bundle) validate() error {
-	if err := do(
-		b.metadata.validate,
-		b.manifests.validate,
-	); err != nil {
-		return fmt.Errorf("failed to validate bundle: %v", err)
-	}
-	return nil
+func (b *Bundle) ID() string {
+	return fmt.Sprintf("%s.v%s", b.metadata.PackageName(), b.tag())
 }
 
-func (b *Bundle) complete() error {
-	if err := do(
-		b.extractCSV,
-	); err != nil {
-		return fmt.Errorf("failed to complete bundle: %v", err)
-	}
-	return nil
+func (b *Bundle) imageNameTag() string {
+	return fmt.Sprintf("%s:%s", b.metadata.PackageName(), b.tag())
 }
 
-func (b *Bundle) extractCSV() error {
-	for _, mf := range b.manifests.manifestFiles {
-		for _, obj := range mf.objects {
-			if obj.GetObjectKind().GroupVersionKind().Kind != v1alpha1.ClusterServiceVersionKind {
-				continue
-			}
-			csv := obj.(*v1alpha1.ClusterServiceVersion)
-			b.csv = *csv
-			return nil
-		}
+func (b *Bundle) MarshalOCI(ctx context.Context, target oras.Target) (ocispec.Descriptor, error) {
+	config, layers, err := b.pushConfigAndLayers(ctx, target)
+	if err != nil {
+		return ocispec.Descriptor{}, err
 	}
-	// this should never happen because the earlier validate step ensures there is exactly one CSV in the manifests.
-	return fmt.Errorf("failed to find ClusterServiceVersion in bundle")
+
+	manifest := ocispec.Manifest{
+		Versioned: specs.Versioned{SchemaVersion: 2},
+		MediaType: ocispec.MediaTypeImageManifest,
+		Config:    config,
+		Layers:    layers,
+	}
+	manifestData, err := json.Marshal(manifest)
+	if err != nil {
+		return ocispec.Descriptor{}, err
+	}
+
+	desc, err := oras.PushBytes(ctx, target, ocispec.MediaTypeImageManifest, manifestData)
+	if err != nil {
+		return ocispec.Descriptor{}, fmt.Errorf("failed to push bundle: %v", err)
+	}
+	if err := target.Tag(ctx, desc, b.imageNameTag()); err != nil {
+		return ocispec.Descriptor{}, fmt.Errorf("failed to tag bundle: %v", err)
+	}
+	return desc, nil
 }
 
-func do(funcs ...func() error) error {
-	var errs []error
-	for _, fn := range funcs {
-		errs = append(errs, fn())
+func (b *Bundle) toFS() fs.FS {
+	fsys := fstest.MapFS{}
+	b.manifests.addToFS(fsys)
+	b.metadata.addToFS(fsys)
+	return fsys
+}
+
+func (b *Bundle) pushConfigAndLayers(ctx context.Context, pusher content.Pusher) (ocispec.Descriptor, []ocispec.Descriptor, error) {
+	var layerData bytes.Buffer
+	diffIDHash := sha256.New()
+
+	bundleFS := b.toFS()
+	if err := func() error {
+		gzipWriter := gzip.NewWriter(&layerData)
+		defer gzipWriter.Close()
+		mw := io.MultiWriter(diffIDHash, gzipWriter)
+		return tar.Directory(mw, bundleFS)
+	}(); err != nil {
+		return ocispec.Descriptor{}, nil, err
 	}
-	return errors.Join(errs...)
+
+	annotationsFile := b.metadata.Annotations()
+	cfg := ocispec.Image{
+		Config: ocispec.ImageConfig{
+			Labels: annotationsFile.Value().Annotations,
+		},
+		RootFS: ocispec.RootFS{
+			Type: "layers",
+			DiffIDs: []digest.Digest{
+				digest.NewDigest(digest.SHA256, diffIDHash),
+			},
+		},
+	}
+	cfgData, err := json.Marshal(cfg)
+	if err != nil {
+		return ocispec.Descriptor{}, nil, err
+	}
+	cfgDesc, err := oras.PushBytes(ctx, pusher, ocispec.MediaTypeImageConfig, cfgData)
+	if err != nil {
+		return ocispec.Descriptor{}, nil, err
+	}
+	layerDesc, err := oras.PushBytes(ctx, pusher, ocispec.MediaTypeImageLayerGzip, layerData.Bytes())
+	if err != nil {
+		return ocispec.Descriptor{}, nil, err
+	}
+	return cfgDesc, []ocispec.Descriptor{layerDesc}, nil
 }

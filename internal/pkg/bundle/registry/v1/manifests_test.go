@@ -7,6 +7,9 @@ import (
 	"testing/fstest"
 
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
+	v1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -14,36 +17,67 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/operator-framework/api/pkg/operators/v1alpha1"
+
+	"github.com/joelanford/kpm/internal/pkg/bundle/registry/internal"
 )
 
-func Test_manifests_load(t *testing.T) {
+func Test_manifestsFSLoader_loadFiles(t *testing.T) {
 	tests := []struct {
 		name      string
 		fsys      fs.FS
-		expected  []manifestFile
+		expected  manifestFiles
 		assertErr require.ErrorAssertionFunc
 	}{
 		{
-			name: "loads successfully",
+			name: "loads files successfully",
 			fsys: fstest.MapFS{
-				"csv.yaml": &fstest.MapFile{
-					Data: []byte(`
+				"manifest.yaml": &fstest.MapFile{Data: []byte(`---
 apiVersion: operators.coreos.com/v1alpha1
 kind: ClusterServiceVersion
-`),
-				},
+---
+apiVersion: v1
+kind: ConfigMap
+---
+apiVersion: example.com/v1alpha1
+kind: SomethingElse
+`)},
 			},
-			expected: []manifestFile{
-				{filename: "csv.yaml", objects: []client.Object{&v1alpha1.ClusterServiceVersion{TypeMeta: metav1.TypeMeta{Kind: "ClusterServiceVersion", APIVersion: "operators.coreos.com/v1alpha1"}}}},
-			},
+			expected: []File[[]client.Object]{
+				NewPrecomputedFile("manifest.yaml", []byte(`---
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+---
+apiVersion: v1
+kind: ConfigMap
+---
+apiVersion: example.com/v1alpha1
+kind: SomethingElse
+`), []client.Object{
+					&v1alpha1.ClusterServiceVersion{
+						TypeMeta: metav1.TypeMeta{
+							Kind:       "ClusterServiceVersion",
+							APIVersion: "operators.coreos.com/v1alpha1",
+						},
+					},
+					&v1.ConfigMap{
+						TypeMeta: metav1.TypeMeta{
+							Kind:       "ConfigMap",
+							APIVersion: "v1",
+						},
+					},
+					&unstructured.Unstructured{
+						Object: map[string]interface{}{
+							"apiVersion": "example.com/v1alpha1",
+							"kind":       "SomethingElse",
+						},
+					},
+				})},
 			assertErr: require.NoError,
 		},
 		{
 			name: "fails due to invalid yaml",
 			fsys: fstest.MapFS{
-				"invalid.yaml": &fstest.MapFile{
-					Data: []byte(`}`),
-				},
+				"invalid.yaml": &fstest.MapFile{Data: []byte(`}`)},
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, "error parsing invalid.yaml")
@@ -52,37 +86,37 @@ kind: ClusterServiceVersion
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := &manifests{fsys: tt.fsys}
-			err := m.load()
+			m := manifestsFSLoader{fsys: tt.fsys}
+			files, err := m.loadFiles()
 			tt.assertErr(t, err)
-			require.Equal(t, tt.expected, m.manifestFiles)
+			require.Equal(t, tt.expected, files)
 		})
 	}
 }
 
-func Test_manifests_validateNoSubDirectories(t *testing.T) {
+func Test_manifestFiles_validateNoSubDirectories(t *testing.T) {
 	tests := []struct {
 		name          string
-		manifestFiles []manifestFile
+		manifestFiles manifestFiles
 		assertErr     require.ErrorAssertionFunc
 	}{
 		{
 			name: "no sub directories, no error",
-			manifestFiles: []manifestFile{
-				{filename: "manifest1.yaml"},
-				{filename: "manifest2.yaml"},
+			manifestFiles: []File[[]client.Object]{
+				NewPrecomputedFile[[]client.Object]("manifest1.yaml", nil, nil),
+				NewPrecomputedFile[[]client.Object]("manifest2.yaml", nil, nil),
 			},
 			assertErr: require.NoError,
 		},
 		{
 			name: "sub directory presence causes error",
-			manifestFiles: []manifestFile{
-				{filename: "manifest1.yaml"},
-				{filename: "manifest2.yaml"},
-				{filename: "subdir1/manifest10.yaml"},
-				{filename: "subdir1/manifest11.yaml"},
-				{filename: "subdir2/manifest20.yaml"},
-				{filename: "subdir2/manifest21.yaml"},
+			manifestFiles: []File[[]client.Object]{
+				NewPrecomputedFile[[]client.Object]("manifest1.yaml", nil, nil),
+				NewPrecomputedFile[[]client.Object]("manifest2.yaml", nil, nil),
+				NewPrecomputedFile[[]client.Object]("subdir1/manifest10.yaml", nil, nil),
+				NewPrecomputedFile[[]client.Object]("subdir1/manifest11.yaml", nil, nil),
+				NewPrecomputedFile[[]client.Object]("subdir2/manifest20.yaml", nil, nil),
+				NewPrecomputedFile[[]client.Object]("subdir2/manifest21.yaml", nil, nil),
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, "subdirectories not allowed")
@@ -93,36 +127,33 @@ func Test_manifests_validateNoSubDirectories(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := &manifests{
-				manifestFiles: tt.manifestFiles,
-			}
-			err := m.validateNoSubDirectories()
+			err := tt.manifestFiles.validateNoSubDirectories()
 			tt.assertErr(t, err)
 		})
 	}
 }
 
-func Test_manifests_validateOneObjectPerFile(t *testing.T) {
+func Test_manifestFiles_validateOneObjectPerFile(t *testing.T) {
 	tests := []struct {
 		name          string
-		manifestFiles []manifestFile
+		manifestFiles manifestFiles
 		assertErr     require.ErrorAssertionFunc
 	}{
 		{
 			name: "one object per file is valid",
-			manifestFiles: []manifestFile{
-				{filename: "manifest1.yaml", objects: make([]client.Object, 1)},
-				{filename: "manifest2.yaml", objects: make([]client.Object, 1)},
+			manifestFiles: []File[[]client.Object]{
+				NewPrecomputedFile[[]client.Object]("manifest1.yaml", nil, make([]client.Object, 1)),
+				NewPrecomputedFile[[]client.Object]("manifest2.yaml", nil, make([]client.Object, 1)),
 			},
 			assertErr: require.NoError,
 		},
 		{
 			name: "manifests with multiple objects are invalid",
-			manifestFiles: []manifestFile{
-				{filename: "manifest1.yaml", objects: make([]client.Object, 1)},
-				{filename: "manifest2.yaml", objects: make([]client.Object, 1)},
-				{filename: "manifest3.yaml", objects: make([]client.Object, 2)},
-				{filename: "manifest4.yaml", objects: make([]client.Object, 3)},
+			manifestFiles: []File[[]client.Object]{
+				NewPrecomputedFile[[]client.Object]("manifest1.yaml", nil, make([]client.Object, 1)),
+				NewPrecomputedFile[[]client.Object]("manifest2.yaml", nil, make([]client.Object, 1)),
+				NewPrecomputedFile[[]client.Object]("manifest3.yaml", nil, make([]client.Object, 2)),
+				NewPrecomputedFile[[]client.Object]("manifest4.yaml", nil, make([]client.Object, 3)),
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, "manifest files must contain exactly one object")
@@ -132,11 +163,11 @@ func Test_manifests_validateOneObjectPerFile(t *testing.T) {
 		},
 		{
 			name: "manifests with no objects are invalid",
-			manifestFiles: []manifestFile{
-				{filename: "manifest1.yaml", objects: make([]client.Object, 1)},
-				{filename: "manifest2.yaml", objects: make([]client.Object, 1)},
-				{filename: "manifest3.yaml", objects: make([]client.Object, 0)},
-				{filename: "manifest4.yaml", objects: make([]client.Object, 0)},
+			manifestFiles: []File[[]client.Object]{
+				NewPrecomputedFile[[]client.Object]("manifest1.yaml", nil, make([]client.Object, 1)),
+				NewPrecomputedFile[[]client.Object]("manifest2.yaml", nil, make([]client.Object, 1)),
+				NewPrecomputedFile[[]client.Object]("manifest3.yaml", nil, make([]client.Object, 0)),
+				NewPrecomputedFile[[]client.Object]("manifest4.yaml", nil, make([]client.Object, 0)),
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, "manifest files must contain exactly one object")
@@ -147,38 +178,35 @@ func Test_manifests_validateOneObjectPerFile(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := &manifests{
-				manifestFiles: tt.manifestFiles,
-			}
-			err := m.validateOneObjectPerFile()
+			err := tt.manifestFiles.validateOneObjectPerFile()
 			tt.assertErr(t, err)
 		})
 	}
 }
 
-func Test_manifests_validateExactlyOneCSV(t *testing.T) {
-	other := makeObject(schema.GroupVersionKind{Group: "example.com", Version: "v1alpha1", Kind: "Other"})
-	csv := makeObject(v1alpha1.SchemeGroupVersion.WithKind(v1alpha1.ClusterServiceVersionKind))
+func Test_manifestFiles_validateExactlyOneCSV(t *testing.T) {
+	other := makeObject(schema.GroupVersionKind{Group: "example.com", Version: "v1alpha1", Kind: "Other"}, "other-name", "")
+	csv := makeObject(v1alpha1.SchemeGroupVersion.WithKind(v1alpha1.ClusterServiceVersionKind), "csv-name", "")
 
 	tests := []struct {
 		name          string
-		manifestFiles []manifestFile
+		manifestFiles manifestFiles
 		assertErr     require.ErrorAssertionFunc
 	}{
 		{
 			name: "exactly one csv among all files is valid",
-			manifestFiles: []manifestFile{
-				{filename: "manifest1.yaml", objects: []client.Object{other}},
-				{filename: "manifest2.yaml", objects: []client.Object{other}},
-				{filename: "csv1.yaml", objects: []client.Object{csv}},
+			manifestFiles: []File[[]client.Object]{
+				NewPrecomputedFile[[]client.Object]("manifest1.yaml", nil, []client.Object{other}),
+				NewPrecomputedFile[[]client.Object]("manifest2.yaml", nil, []client.Object{other}),
+				NewPrecomputedFile[[]client.Object]("csv1.yaml", nil, []client.Object{csv}),
 			},
 			assertErr: require.NoError,
 		},
 		{
 			name: "zero csvs among all files is invalid",
-			manifestFiles: []manifestFile{
-				{filename: "manifest1.yaml", objects: []client.Object{other}},
-				{filename: "manifest2.yaml", objects: []client.Object{other}},
+			manifestFiles: []File[[]client.Object]{
+				NewPrecomputedFile[[]client.Object]("manifest1.yaml", nil, []client.Object{other}),
+				NewPrecomputedFile[[]client.Object]("manifest2.yaml", nil, []client.Object{other}),
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, "exactly one ClusterServiceVersion object is required, found 0")
@@ -194,11 +222,11 @@ func Test_manifests_validateExactlyOneCSV(t *testing.T) {
 		},
 		{
 			name: "multiple csvs among all files is invalid",
-			manifestFiles: []manifestFile{
-				{filename: "manifest1.yaml", objects: []client.Object{other}},
-				{filename: "manifest2.yaml", objects: []client.Object{other}},
-				{filename: "csv1.yaml", objects: []client.Object{csv}},
-				{filename: "csv2.yaml", objects: []client.Object{csv}},
+			manifestFiles: []File[[]client.Object]{
+				NewPrecomputedFile[[]client.Object]("manifest1.yaml", nil, []client.Object{other}),
+				NewPrecomputedFile[[]client.Object]("manifest2.yaml", nil, []client.Object{other}),
+				NewPrecomputedFile[[]client.Object]("csv1.yaml", nil, []client.Object{csv}),
+				NewPrecomputedFile[[]client.Object]("csv2.yaml", nil, []client.Object{csv}),
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, "exactly one ClusterServiceVersion object is required, found 2")
@@ -209,19 +237,16 @@ func Test_manifests_validateExactlyOneCSV(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := &manifests{
-				manifestFiles: tt.manifestFiles,
-			}
-			err := m.validateExactlyOneCSV()
+			err := tt.manifestFiles.validateExactlyOneCSV()
 			tt.assertErr(t, err)
 		})
 	}
 }
 
-func Test_manifests_validateSupportedKinds(t *testing.T) {
+func Test_manifestFiles_validateSupportedKinds(t *testing.T) {
 	tests := []struct {
 		name          string
-		manifestFiles []manifestFile
+		manifestFiles manifestFiles
 		assertErr     require.ErrorAssertionFunc
 	}{
 		{
@@ -241,19 +266,218 @@ func Test_manifests_validateSupportedKinds(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := &manifests{
-				manifestFiles: tt.manifestFiles,
-			}
-			err := m.validateSupportedKinds()
+			err := tt.manifestFiles.validateSupportedKinds()
 			tt.assertErr(t, err)
 		})
 	}
 }
 
-func Test_manifests_validate(t *testing.T) {
+func Test_manifestFiles_validateOwnedCRDs(t *testing.T) {
 	tests := []struct {
 		name          string
-		manifestFiles []manifestFile
+		manifestFiles manifestFiles
+		assertErr     require.ErrorAssertionFunc
+	}{
+		{
+			name: "valid",
+			manifestFiles: manifestFiles{
+				NewPrecomputedFile[[]client.Object]("csv.yaml", nil, []client.Object{&v1alpha1.ClusterServiceVersion{
+					ObjectMeta: metav1.ObjectMeta{Name: "example.v0.0.1"},
+					Spec: v1alpha1.ClusterServiceVersionSpec{
+						CustomResourceDefinitions: v1alpha1.CustomResourceDefinitions{
+							Owned: []v1alpha1.CRDDescription{
+								{Name: "bars.group.example.com", Version: "v1", Kind: "Bar"},
+								{Name: "bars.group.example.com", Version: "v2", Kind: "Bar"},
+								{Name: "foos.group.example.com", Version: "v1alpha1", Kind: "Foo"},
+								{Name: "foos.group.example.com", Version: "v1alpha2", Kind: "Foo"},
+							},
+						},
+					},
+				}}),
+				NewPrecomputedFile[[]client.Object]("foos.crd.yaml", nil, []client.Object{&apiextensionsv1.CustomResourceDefinition{
+					ObjectMeta: metav1.ObjectMeta{Name: "foos.group.example.com"},
+					Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+						Names: apiextensionsv1.CustomResourceDefinitionNames{
+							Kind: "Foo",
+						},
+						Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
+							{Name: "v1alpha1"}, {Name: "v1alpha2"},
+						},
+					},
+				}}),
+				NewPrecomputedFile[[]client.Object]("bars.crd.yaml", nil, []client.Object{&apiextensionsv1.CustomResourceDefinition{
+					ObjectMeta: metav1.ObjectMeta{Name: "bars.group.example.com"},
+					Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+						Names: apiextensionsv1.CustomResourceDefinitionNames{
+							Kind: "Bar",
+						},
+						Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
+							{Name: "v1"}, {Name: "v2"},
+						},
+					},
+				}}),
+			},
+			assertErr: require.NoError,
+		},
+		{
+			name: "missing CRD version in CRD manifest",
+			manifestFiles: manifestFiles{
+				NewPrecomputedFile[[]client.Object]("csv.yaml", nil, []client.Object{&v1alpha1.ClusterServiceVersion{
+					ObjectMeta: metav1.ObjectMeta{Name: "example.v0.0.1"},
+					Spec: v1alpha1.ClusterServiceVersionSpec{
+						CustomResourceDefinitions: v1alpha1.CustomResourceDefinitions{
+							Owned: []v1alpha1.CRDDescription{
+								{Name: "bars.group.example.com", Version: "v1", Kind: "Bar"},
+								{Name: "bars.group.example.com", Version: "v2", Kind: "Bar"},
+								{Name: "foos.group.example.com", Version: "v1alpha1", Kind: "Foo"},
+								{Name: "foos.group.example.com", Version: "v1alpha2", Kind: "Foo"},
+							},
+						},
+					},
+				}}),
+				NewPrecomputedFile[[]client.Object]("foos.crd.yaml", nil, []client.Object{&apiextensionsv1.CustomResourceDefinition{
+					ObjectMeta: metav1.ObjectMeta{Name: "foos.group.example.com"},
+					Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+						Names: apiextensionsv1.CustomResourceDefinitionNames{
+							Kind: "Foo",
+						},
+						Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
+							{Name: "v1alpha1"}, {Name: "v1alpha2"},
+						},
+					},
+				}}),
+				NewPrecomputedFile[[]client.Object]("bars.crd.yaml", nil, []client.Object{&apiextensionsv1.CustomResourceDefinition{
+					ObjectMeta: metav1.ObjectMeta{Name: "bars.group.example.com"},
+					Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+						Names: apiextensionsv1.CustomResourceDefinitionNames{
+							Kind: "Bar",
+						},
+						Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
+							{Name: "v1"},
+						},
+					},
+				}}),
+			},
+			assertErr: func(t require.TestingT, err error, i ...interface{}) {
+				require.ErrorContains(t, err, `CSV-owned CRD "bars.group.example.com", version "v2" not found in manifests`)
+			},
+		},
+		{
+			name: "missing CRDs",
+			manifestFiles: manifestFiles{
+				NewPrecomputedFile[[]client.Object]("csv.yaml", nil, []client.Object{&v1alpha1.ClusterServiceVersion{
+					ObjectMeta: metav1.ObjectMeta{Name: "example.v0.0.1"},
+					Spec: v1alpha1.ClusterServiceVersionSpec{
+						CustomResourceDefinitions: v1alpha1.CustomResourceDefinitions{
+							Owned: []v1alpha1.CRDDescription{
+								{Name: "bars.group.example.com", Version: "v1", Kind: "Bar"},
+								{Name: "bars.group.example.com", Version: "v2", Kind: "Bar"},
+								{Name: "foos.group.example.com", Version: "v1alpha1", Kind: "Foo"},
+								{Name: "foos.group.example.com", Version: "v1alpha2", Kind: "Foo"},
+							},
+						},
+					},
+				}}),
+			},
+			assertErr: func(t require.TestingT, err error, i ...interface{}) {
+				require.ErrorContains(t, err, `CSV-owned CRD "bars.group.example.com", version "v1" not found in manifests`)
+				require.ErrorContains(t, err, `CSV-owned CRD "bars.group.example.com", version "v2" not found in manifests`)
+				require.ErrorContains(t, err, `CSV-owned CRD "foos.group.example.com", version "v1alpha1" not found in manifests`)
+				require.ErrorContains(t, err, `CSV-owned CRD "foos.group.example.com", version "v1alpha2" not found in manifests`)
+			},
+		},
+		{
+			name: "CSV missing owned CRD",
+			manifestFiles: manifestFiles{
+				NewPrecomputedFile[[]client.Object]("csv.yaml", nil, []client.Object{&v1alpha1.ClusterServiceVersion{
+					ObjectMeta: metav1.ObjectMeta{Name: "example.v0.0.1"},
+				}}),
+				NewPrecomputedFile[[]client.Object]("foos.crd.yaml", nil, []client.Object{&apiextensionsv1.CustomResourceDefinition{
+					ObjectMeta: metav1.ObjectMeta{Name: "foos.group.example.com"},
+					Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+						Names: apiextensionsv1.CustomResourceDefinitionNames{
+							Kind: "Foo",
+						},
+						Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
+							{Name: "v1alpha1"}, {Name: "v1alpha2"},
+						},
+					},
+				}}),
+			},
+			assertErr: func(t require.TestingT, err error, i ...interface{}) {
+				require.ErrorContains(t, err, `CRD "foos.group.example.com", version "v1alpha1" not owned by CSV`)
+				require.ErrorContains(t, err, `CRD "foos.group.example.com", version "v1alpha2" not owned by CSV`)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.manifestFiles.validateOwnedAPIs()
+			tt.assertErr(t, err)
+		})
+	}
+}
+
+func Test_manifestFiles_validateUniqueGroupKindName(t *testing.T) {
+	tests := []struct {
+		name          string
+		manifestFiles manifestFiles
+		assertErr     require.ErrorAssertionFunc
+	}{
+		{
+			name:          "valid",
+			manifestFiles: supportedManifestFiles(),
+			assertErr:     require.NoError,
+		},
+		{
+			name: "valid: duplicate GK, different names",
+			manifestFiles: manifestFiles{
+				NewPrecomputedFile[[]client.Object]("manifest1.yaml", nil, []client.Object{
+					makeObject(appsv1.SchemeGroupVersion.WithKind("Deployment"), "name1", ""),
+				}),
+				NewPrecomputedFile[[]client.Object]("manifest2.yaml", nil, []client.Object{
+					makeObject(appsv1.SchemeGroupVersion.WithKind("Deployment"), "name2", ""),
+				}),
+			},
+			assertErr: require.NoError,
+		},
+		{
+			name: "valid: duplicate names, different GKs",
+			manifestFiles: manifestFiles{
+				NewPrecomputedFile[[]client.Object]("manifest1.yaml", nil, []client.Object{
+					makeObject(appsv1.SchemeGroupVersion.WithKind("Deployment"), "name", ""),
+				}),
+				NewPrecomputedFile[[]client.Object]("manifest2.yaml", nil, []client.Object{
+					makeObject(appsv1.SchemeGroupVersion.WithKind("ReplicaSet"), "name", ""),
+				}),
+			},
+			assertErr: require.NoError,
+		},
+		{
+			name: "invalid: duplicate GKN",
+			manifestFiles: manifestFiles{
+				NewPrecomputedFile[[]client.Object]("manifest1.yaml", nil, []client.Object{
+					makeObject(appsv1.SchemeGroupVersion.WithKind("Deployment"), "dep", ""),
+				}),
+				NewPrecomputedFile[[]client.Object]("manifest2.yaml", nil, []client.Object{
+					makeObject(appsv1.SchemeGroupVersion.WithKind("Deployment"), "dep", ""),
+				}),
+			},
+			assertErr: require.Error,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.manifestFiles.validateUniqueGroupKindName()
+			tt.assertErr(t, err)
+		})
+	}
+}
+
+func Test_manifestFiles_validate(t *testing.T) {
+	tests := []struct {
+		name          string
+		manifestFiles manifestFiles
 		assertErr     require.ErrorAssertionFunc
 	}{
 		{
@@ -263,14 +487,10 @@ func Test_manifests_validate(t *testing.T) {
 		},
 		{
 			name: "validate collects suberrors",
-			manifestFiles: []manifestFile{
-				{filename: "subdir/service.yaml", objects: []client.Object{
-					makeObject(schema.GroupVersionKind{Version: "v1", Kind: "Service"}),
-				}},
-				{filename: "no_objects.yaml", objects: nil},
-				{filename: "unsupported.yaml", objects: []client.Object{
-					makeObject(schema.GroupVersionKind{Group: "example.com", Version: "v1alpha1", Kind: "Unsupported"}),
-				}},
+			manifestFiles: []File[[]client.Object]{
+				NewPrecomputedFile[[]client.Object]("subdir/service.yaml", nil, []client.Object{makeObject(schema.GroupVersionKind{Version: "v1", Kind: "Service"}, "svc", "")}),
+				NewPrecomputedFile[[]client.Object]("no_objects.yaml", nil, nil),
+				NewPrecomputedFile[[]client.Object]("unsupported.yaml", nil, []client.Object{makeObject(schema.GroupVersionKind{Group: "example.com", Version: "v1alpha1", Kind: "Unsupported"}, "u", "")}),
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, "subdirectories not allowed")
@@ -282,40 +502,40 @@ func Test_manifests_validate(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := &manifests{
-				manifestFiles: tt.manifestFiles,
-			}
-			err := m.validate()
+			err := tt.manifestFiles.validate()
 			tt.assertErr(t, err)
 		})
 	}
 }
 
-func makeObject(gvk schema.GroupVersionKind) client.Object {
-	obj, _ := supportedKindsScheme.New(gvk)
+func makeObject(gvk schema.GroupVersionKind, name string, namespace string) client.Object {
+	obj, _ := internal.SupportedKindsScheme.New(gvk)
 	if obj == nil {
 		obj = &unstructured.Unstructured{}
 	}
-	obj.GetObjectKind().SetGroupVersionKind(gvk)
-	return obj.(client.Object)
+	cObj := obj.(client.Object)
+	cObj.GetObjectKind().SetGroupVersionKind(gvk)
+	cObj.SetName(name)
+	cObj.SetNamespace(namespace)
+	return cObj
 }
 
-func unsupportedManifestFiles() []manifestFile {
-	unsupported1 := makeObject(schema.GroupVersionKind{Group: "example.com", Version: "v1alpha1", Kind: "Unsupported1"})
-	unsupported2 := makeObject(schema.GroupVersionKind{Group: "example.com", Version: "v1alpha1", Kind: "Unsupported2"})
+func unsupportedManifestFiles() []File[[]client.Object] {
+	unsupported1 := makeObject(schema.GroupVersionKind{Group: "example.com", Version: "v1alpha1", Kind: "Unsupported1"}, "u1", "")
+	unsupported2 := makeObject(schema.GroupVersionKind{Group: "example.com", Version: "v1alpha1", Kind: "Unsupported2"}, "u2", "")
 
-	return []manifestFile{
-		{filename: "Unsupported1.yaml", objects: []client.Object{unsupported1}},
-		{filename: "Unsupported2.yaml", objects: []client.Object{unsupported2}},
+	return []File[[]client.Object]{
+		NewPrecomputedFile[[]client.Object]("Unsupported1.yaml", nil, []client.Object{unsupported1}),
+		NewPrecomputedFile[[]client.Object]("Unsupported2.yaml", nil, []client.Object{unsupported2}),
 	}
 }
 
-func supportedManifestFiles() []manifestFile {
-	kinds := sets.List(supportedKinds)
-	manifestFiles := make([]manifestFile, 0, len(kinds))
-	for _, kind := range kinds {
-		obj := makeObject(schema.GroupVersionKind{Group: "example.com", Version: "v1alpha1", Kind: kind})
-		manifestFiles = append(manifestFiles, manifestFile{filename: fmt.Sprintf("%s.yaml", kind), objects: []client.Object{obj}})
+func supportedManifestFiles() []File[[]client.Object] {
+	kinds := sets.List(internal.SupportedKinds)
+	mf := make([]File[[]client.Object], 0, len(kinds))
+	for i, kind := range kinds {
+		obj := makeObject(schema.GroupVersionKind{Group: "example.com", Version: "v1alpha1", Kind: kind}, fmt.Sprintf("obj%d", i), "")
+		mf = append(mf, NewPrecomputedFile(fmt.Sprintf("%s.yaml", kind), nil, []client.Object{obj}))
 	}
-	return manifestFiles
+	return mf
 }

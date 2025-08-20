@@ -1,39 +1,102 @@
 package v1
 
 import (
+	"bytes"
+	"cmp"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"iter"
 	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
+	"testing/fstest"
 
-	consolev1 "github.com/openshift/api/console/v1"
-	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
-	corev1 "k8s.io/api/core/v1"
-	policyv1 "k8s.io/api/policy/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
-	schedulingv1 "k8s.io/api/scheduling/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/sets"
-	autoscalingv1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
+	"k8s.io/apimachinery/pkg/version"
 	"k8s.io/cli-runtime/pkg/resource"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	ofv1alpha1 "github.com/operator-framework/api/pkg/operators/v1alpha1"
+	"github.com/operator-framework/api/pkg/operators/v1alpha1"
+
+	"github.com/joelanford/kpm/internal/pkg/bundle/registry/internal"
 )
 
-const ManifestsDirectory = "manifests/"
-
 type manifests struct {
-	fsys          fs.FS
-	manifestFiles []manifestFile
+	csv    File[*v1alpha1.ClusterServiceVersion]
+	crds   []File[*apiextensionsv1.CustomResourceDefinition]
+	others []File[client.Object]
 }
 
-func (m *manifests) load() error {
-	var loadErrs []error
+func (m *manifests) CSV() File[*v1alpha1.ClusterServiceVersion] {
+	return m.csv
+}
+
+func (m *manifests) CRDs() []File[*apiextensionsv1.CustomResourceDefinition] {
+	return m.crds
+}
+
+func (m *manifests) Others() []File[client.Object] {
+	return m.others
+}
+
+func (m *manifests) All() iter.Seq[File[client.Object]] {
+	return func(yield func(File[client.Object]) bool) {
+		if !yield(toObjectFile(m.csv)) {
+			return
+		}
+		for _, crd := range m.crds {
+			if !yield(toObjectFile(crd)) {
+				return
+			}
+		}
+		for _, other := range m.others {
+			if !yield(other) {
+				return
+			}
+		}
+	}
+}
+
+func toObjectFile[T client.Object](in File[T]) File[client.Object] {
+	return NewPrecomputedFile[client.Object](in.Name(), in.Data(), in.Value())
+}
+
+func (m *manifests) addToFS(fsys fstest.MapFS) {
+	for f := range m.All() {
+		path := filepath.Join(manifestsDirectory, f.Name())
+		fsys[path] = &fstest.MapFile{Data: f.Data()}
+	}
+}
+
+type ManifestsLoader interface {
+	Load() (*manifests, error)
+}
+
+type manifestsFSLoader struct {
+	fsys fs.FS
+}
+
+func (m *manifestsFSLoader) Load() (*manifests, error) {
+	files, err := m.loadFiles()
+	if err != nil {
+		return nil, err
+	}
+	return files.toManifests()
+}
+
+func (m *manifestsFSLoader) loadFiles() (manifestFiles, error) {
+	var (
+		files    manifestFiles
+		loadErrs []error
+	)
+
 	if err := fs.WalkDir(m.fsys, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			loadErrs = append(loadErrs, err)
@@ -42,29 +105,65 @@ func (m *manifests) load() error {
 		if d.IsDir() {
 			return nil
 		}
-		mf, err := newManifestFile(m.fsys, path)
+
+		f, err := m.fsys.Open(path)
 		if err != nil {
 			loadErrs = append(loadErrs, err)
 			return nil
 		}
-		m.manifestFiles = append(m.manifestFiles, *mf)
+		defer f.Close()
+
+		mf, err := newManifestFileFromReader(f, path)
+		if err != nil {
+			loadErrs = append(loadErrs, err)
+			return nil
+		}
+		files = append(files, *mf)
 		return nil
 	}); err != nil {
-		panic("programmer error: walk function should have collected error, not returned it. Error: " + err.Error())
+		panic("all errors should be collected by the WalkDirFunc")
 	}
 	if err := errors.Join(loadErrs...); err != nil {
-		return fmt.Errorf("failed to load manifests: %v", err)
+		return nil, fmt.Errorf("failed to load manifests: %v", err)
 	}
-	return nil
+	return files, nil
 }
 
-func (m *manifests) validate() error {
+type manifestFiles []File[[]client.Object]
+
+func (m manifestFiles) toManifests() (*manifests, error) {
+	if err := m.validate(); err != nil {
+		return nil, err
+	}
+	var manifests manifests
+	for _, mf := range m {
+		if len(mf.Value()) != 1 {
+			panic("validation should have ensured that each manifest file has exactly one object")
+		}
+		obj := mf.Value()[0]
+		switch obj.GetObjectKind().GroupVersionKind().Kind {
+		case v1alpha1.ClusterServiceVersionKind:
+			csvObj := obj.(*v1alpha1.ClusterServiceVersion)
+			manifests.csv = NewPrecomputedFile(mf.Name(), mf.Data(), csvObj)
+		case "CustomResourceDefinition":
+			crdObj := obj.(*apiextensionsv1.CustomResourceDefinition)
+			manifests.crds = append(manifests.crds, NewPrecomputedFile(mf.Name(), mf.Data(), crdObj))
+		default:
+			manifests.others = append(manifests.others, NewPrecomputedFile(mf.Name(), mf.Data(), obj))
+		}
+	}
+	return &manifests, nil
+}
+
+func (m manifestFiles) validate() error {
 	var validationErrors []error
 	for _, validationFn := range []func() error{
 		m.validateNoSubDirectories,
 		m.validateOneObjectPerFile,
 		m.validateExactlyOneCSV,
+		m.validateUniqueGroupKindName,
 		m.validateSupportedKinds,
+		m.validateOwnedAPIs,
 	} {
 		if err := validationFn(); err != nil {
 			validationErrors = append(validationErrors, err)
@@ -76,10 +175,10 @@ func (m *manifests) validate() error {
 	return nil
 }
 
-func (m *manifests) validateNoSubDirectories() error {
+func (m manifestFiles) validateNoSubDirectories() error {
 	foundSubDirectories := map[string]struct{}{}
-	for _, mf := range m.manifestFiles {
-		foundSubDirectories[filepath.Dir(mf.filename)] = struct{}{}
+	for _, mf := range m {
+		foundSubDirectories[filepath.Dir(mf.Name())] = struct{}{}
 	}
 	delete(foundSubDirectories, ".")
 	if len(foundSubDirectories) == 0 {
@@ -88,11 +187,11 @@ func (m *manifests) validateNoSubDirectories() error {
 	return fmt.Errorf("found subdirectories %v: subdirectories not allowed", slices.Sorted(maps.Keys(foundSubDirectories)))
 }
 
-func (m *manifests) validateOneObjectPerFile() error {
+func (m manifestFiles) validateOneObjectPerFile() error {
 	var invalidFiles []string
-	for _, mf := range m.manifestFiles {
-		if len(mf.objects) != 1 {
-			invalidFiles = append(invalidFiles, fmt.Sprintf("%q has %d", mf.filename, len(mf.objects)))
+	for _, mf := range m {
+		if len(mf.Value()) != 1 {
+			invalidFiles = append(invalidFiles, fmt.Sprintf("%q has %d", mf.Name(), len(mf.Value())))
 		}
 	}
 	if len(invalidFiles) > 0 {
@@ -101,19 +200,19 @@ func (m *manifests) validateOneObjectPerFile() error {
 	return nil
 }
 
-func (m *manifests) validateExactlyOneCSV() error {
+func (m manifestFiles) validateExactlyOneCSV() error {
 	totalCount := 0
 	foundCSVs := map[string]int{}
-	for _, mf := range m.manifestFiles {
-		for _, o := range mf.objects {
-			if o.GetObjectKind().GroupVersionKind().Kind == ofv1alpha1.ClusterServiceVersionKind {
+	for _, mf := range m {
+		for _, o := range mf.Value() {
+			if o.GetObjectKind().GroupVersionKind().Kind == v1alpha1.ClusterServiceVersionKind {
 				totalCount++
-				foundCSVs[mf.filename]++
+				foundCSVs[mf.Name()]++
 			}
 		}
 	}
 	if totalCount == 0 {
-		return fmt.Errorf("exactly one %s object is required, found 0", ofv1alpha1.ClusterServiceVersionKind)
+		return fmt.Errorf("exactly one %s object is required, found 0", v1alpha1.ClusterServiceVersionKind)
 	}
 	if totalCount > 1 {
 		counts := make([]string, 0, len(foundCSVs))
@@ -121,82 +220,23 @@ func (m *manifests) validateExactlyOneCSV() error {
 			csvCount := foundCSVs[filename]
 			counts = append(counts, fmt.Sprintf("%q has %d", filename, csvCount))
 		}
-		return fmt.Errorf("exactly one %s object is required, found %d: %v", ofv1alpha1.ClusterServiceVersionKind, totalCount, strings.Join(counts, ", "))
+		return fmt.Errorf("exactly one %s object is required, found %d: %v", v1alpha1.ClusterServiceVersionKind, totalCount, strings.Join(counts, ", "))
 	}
 	return nil
 }
 
-var supportedKinds = sets.New[string](
-	// corev1
-	"ConfigMap",
-	"Secret",
-	"Service",
-	"ServiceAccount",
-
-	// apiextensionsv1
-	"CustomResourceDefinition",
-
-	// rbacv1
-	"ClusterRole",
-	"ClusterRoleBinding",
-	"Role",
-	"RoleBinding",
-
-	// ofv1alpha1
-	ofv1alpha1.ClusterServiceVersionKind,
-
-	// schedulingv1
-	"PriorityClass",
-
-	// policyv1
-	"PodDisruptionBudget",
-
-	// autoscalingv1
-	"VerticalPodAutoscaler",
-
-	// monitoringv1
-	"PrometheusRule",
-	"ServiceMonitor",
-
-	// console
-	"ConsoleYAMLSample",
-	"ConsoleQuickStart",
-	"ConsoleCLIDownload",
-	"ConsoleLink",
-)
-
-func initScheme() *runtime.Scheme {
-	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
-	_ = apiextensionsv1.AddToScheme(scheme)
-	_ = rbacv1.AddToScheme(scheme)
-	_ = ofv1alpha1.AddToScheme(scheme)
-	_ = schedulingv1.AddToScheme(scheme)
-	_ = policyv1.AddToScheme(scheme)
-	_ = autoscalingv1.AddToScheme(scheme)
-	_ = monitoringv1.AddToScheme(scheme)
-	_ = consolev1.AddToScheme(scheme)
-	return scheme
-}
-
-var supportedKindsScheme *runtime.Scheme
-
-func init() {
-	supportedKindsScheme = initScheme()
-}
-
-func (m *manifests) validateSupportedKinds() error {
+func (m manifestFiles) validateSupportedKinds() error {
 	var unsupported []string
-	for _, mf := range m.manifestFiles {
+	for _, mf := range m {
 		fileUnsupported := sets.New[string]()
-		for _, obj := range mf.objects {
+		for _, obj := range mf.Value() {
 			kind := obj.GetObjectKind().GroupVersionKind().Kind
-			if !supportedKinds.Has(kind) {
+			if !internal.SupportedKinds.Has(kind) {
 				fileUnsupported.Insert(kind)
 			}
 		}
 		if len(fileUnsupported) > 0 {
-			unsupported = append(unsupported, fmt.Sprintf("file %q contains %v", mf.filename, sets.List(fileUnsupported)))
+			unsupported = append(unsupported, fmt.Sprintf("file %q contains %v", mf.Name(), sets.List(fileUnsupported)))
 		}
 	}
 	if len(unsupported) > 0 {
@@ -205,24 +245,121 @@ func (m *manifests) validateSupportedKinds() error {
 	return nil
 }
 
-type manifestFile struct {
-	filename string
-	objects  []client.Object
+type nameVersion struct {
+	name    string
+	version string
 }
 
-func newManifestFile(fsys fs.FS, path string) (*manifestFile, error) {
-	file, err := fsys.Open(path)
-	if err != nil {
-		return nil, err
+func (nv *nameVersion) Compare(other nameVersion) int {
+	if v := cmp.Compare(nv.name, other.name); v != 0 {
+		return v
 	}
-	defer file.Close()
+	return version.CompareKubeAwareVersionStrings(nv.version, other.version)
+}
+
+func (m manifestFiles) validateOwnedAPIs() error {
 
 	var (
-		m    = &manifestFile{filename: path}
+		crdNVKs = sets.New[nameVersion]()
+		csvNVKs = sets.New[nameVersion]()
+	)
+
+	for _, mf := range m {
+		for _, obj := range mf.Value() {
+			switch val := obj.(type) {
+			case *apiextensionsv1.CustomResourceDefinition:
+				for _, crdVersion := range val.Spec.Versions {
+					crdNVKs.Insert(nameVersion{
+						name:    val.Name,
+						version: crdVersion.Name,
+					})
+				}
+			case *v1alpha1.ClusterServiceVersion:
+				for _, ownedAPI := range val.Spec.CustomResourceDefinitions.Owned {
+					csvNVKs.Insert(nameVersion{
+						name:    ownedAPI.Name,
+						version: ownedAPI.Version,
+					})
+				}
+			}
+		}
+	}
+
+	var errs []error
+	if crdOnly := crdNVKs.Difference(csvNVKs); crdOnly.Len() > 0 {
+		crdOnlySorted := crdOnly.UnsortedList()
+		slices.SortFunc(crdOnlySorted, func(a, b nameVersion) int {
+			return a.Compare(b)
+		})
+		for _, crd := range crdOnlySorted {
+			errs = append(errs, fmt.Errorf("CRD %q, version %q not owned by CSV", crd.name, crd.version))
+		}
+	}
+	if csvOnly := csvNVKs.Difference(crdNVKs); csvOnly.Len() > 0 {
+		csvOnlySorted := csvOnly.UnsortedList()
+		slices.SortFunc(csvOnlySorted, func(a, b nameVersion) int {
+			return a.Compare(b)
+		})
+		for _, crd := range csvOnlySorted {
+			errs = append(errs, fmt.Errorf("CSV-owned CRD %q, version %q not found in manifests", crd.name, crd.version))
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return fmt.Errorf("mismatch between CRDs and CSV.spec.customresourcedefinitions.owned: %v", err)
+	}
+	return nil
+}
+
+type gkn struct {
+	schema.GroupKind
+	Name string
+}
+
+func (v gkn) String() string {
+	return fmt.Sprintf("%s/%s", v.GroupKind, v.Name)
+}
+
+func (m manifestFiles) validateUniqueGroupKindName() error {
+	counts := make(map[gkn]int, len(m))
+	for _, mf := range m {
+		for _, obj := range mf.Value() {
+			key := gkn{
+				GroupKind: obj.GetObjectKind().GroupVersionKind().GroupKind(),
+				Name:      client.ObjectKeyFromObject(obj).Name,
+			}
+			counts[key]++
+		}
+	}
+
+	var dups []string
+	for key, count := range counts {
+		if count <= 1 {
+			continue
+		}
+		dups = append(dups, key.String())
+	}
+	slices.Sort(dups)
+	if len(dups) > 0 {
+		return fmt.Errorf("duplicate group kind names: %v", strings.Join(dups, ", "))
+	}
+	return nil
+}
+
+func newManifestFileFromReader(file io.Reader, path string) (*File[[]client.Object], error) {
+	var (
+		objs []client.Object
 		errs []error
 	)
+
+	// We'll store the original file contents in this buffer as the
+	// resource builder reads objects from the stream.
+	buf := &bytes.Buffer{}
+	file = io.TeeReader(file, buf)
+
+	resource.NewLocalBuilder()
 	res := resource.NewLocalBuilder().
-		WithScheme(supportedKindsScheme, supportedKindsScheme.PrioritizedVersionsAllGroups()...).
+		ContinueOnError().
+		Unstructured().
 		Flatten().
 		Stream(file, path).
 		Do()
@@ -234,13 +371,26 @@ func newManifestFile(fsys fs.FS, path string) (*manifestFile, error) {
 			errs = append(errs, err)
 			return nil
 		}
-		m.objects = append(m.objects, info.Object.(client.Object))
+
+		u := info.Object.(*unstructured.Unstructured)
+		gvk := u.GroupVersionKind()
+
+		if internal.SupportedKindsScheme.Recognizes(gvk) {
+			info.Object, _ = internal.SupportedKindsScheme.New(gvk)
+			if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, info.Object); err != nil {
+				errs = append(errs, err)
+				return nil
+			}
+		}
+
+		objs = append(objs, info.Object.(client.Object))
 		return nil
 	}); err != nil {
+		errs = append(errs, err)
+	}
+	if err := errors.Join(errs...); err != nil {
 		return nil, err
 	}
-	if len(errs) > 0 {
-		return nil, errors.Join(errs...)
-	}
-	return m, nil
+	f := NewPrecomputedFile(path, buf.Bytes(), objs)
+	return &f, nil
 }

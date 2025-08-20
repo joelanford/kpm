@@ -5,36 +5,71 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"iter"
 	"maps"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
+	"testing/fstest"
 
 	"github.com/blang/semver/v4"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation"
-	"sigs.k8s.io/yaml"
-)
 
-const (
-	MetadataDirectory = "metadata/"
-
-	AnnotationsFile  = "annotations.yaml"
-	PropertiesFile   = "properties.yaml"
-	DependenciesFile = "dependencies.yaml"
-
-	AnnotationMediaType = "operators.operatorframework.io.bundle.mediatype.v1"
-	AnnotationManifests = "operators.operatorframework.io.bundle.manifests.v1"
-	AnnotationMetadata  = "operators.operatorframework.io.bundle.metadata.v1"
-	AnnotationPackage   = "operators.operatorframework.io.bundle.package.v1"
+	"github.com/joelanford/kpm/internal/pkg/bundle/registry/internal"
 )
 
 type metadata struct {
-	fsys             fs.FS
-	annotationsFile  Annotations
-	propertiesFile   Properties
-	dependenciesFile Dependencies
+	annotationsFile  AnnotationsFile
+	propertiesFile   *PropertiesFile
+	dependenciesFile *DependenciesFile
 }
+
+func (m *metadata) PackageName() string {
+	return m.annotationsFile.Value().Annotations[annotationPackage]
+}
+
+func (m *metadata) Annotations() AnnotationsFile {
+	return m.annotationsFile
+}
+
+func (m *metadata) Properties() *PropertiesFile {
+	return m.propertiesFile
+}
+
+func (m *metadata) Dependencies() *DependenciesFile {
+	return m.dependenciesFile
+}
+
+func (m *metadata) All() iter.Seq[File[any]] {
+	return func(yield func(File[any]) bool) {
+		if !yield(toAnyFile(m.annotationsFile)) {
+			return
+		}
+		if m.propertiesFile != nil && !yield(toAnyFile(*m.propertiesFile)) {
+			return
+		}
+		if m.dependenciesFile != nil && !yield(toAnyFile(*m.dependenciesFile)) {
+			return
+		}
+	}
+}
+
+func toAnyFile[T any](in File[T]) File[any] {
+	return NewPrecomputedFile[any](in.Name(), in.Data(), in.Value())
+}
+
+func (m *metadata) addToFS(fsys fstest.MapFS) {
+	for f := range m.All() {
+		path := filepath.Join(metadataDirectory, f.Name())
+		fsys[path] = &fstest.MapFile{Data: f.Data()}
+	}
+}
+
+type AnnotationsFile = File[Annotations]
+type PropertiesFile = File[Properties]
+type DependenciesFile = File[Dependencies]
 
 type Annotations struct {
 	Annotations map[string]string `json:"annotations"`
@@ -48,57 +83,90 @@ type Dependencies struct {
 	Dependencies []Dependency `json:"dependencies"`
 }
 
-func (m *metadata) load() error {
-	var loadErrs []error
-	for _, loadFn := range []func() error{
-		m.loadMetadataAnnotations,
-		m.loadMetadataProperties,
-		m.loadMetadataDependencies,
-	} {
-		if err := loadFn(); err != nil {
-			loadErrs = append(loadErrs, err)
-		}
-	}
-	return errors.Join(loadErrs...)
+type Property struct {
+	Type  string          `json:"type"`
+	Value json.RawMessage `json:"value"`
 }
 
-func (m *metadata) loadMetadataAnnotations() error {
-	annotationsData, err := fs.ReadFile(m.fsys, AnnotationsFile)
+type Dependency = Property
+
+type MetadataLoader interface {
+	Load() (*metadata, error)
+}
+type metadataFSLoader struct {
+	fsys fs.FS
+}
+
+func (m *metadataFSLoader) loadMetadata() (*metadata, error) {
+	a, aErr := m.loadAnnotations()
+	p, pErr := m.loadProperties()
+	d, dErr := m.loadDependencies()
+	if err := errors.Join(aErr, pErr, dErr); err != nil {
+		return nil, err
+	}
+	return &metadata{
+		annotationsFile:  *a,
+		propertiesFile:   p,
+		dependenciesFile: d,
+	}, nil
+}
+
+func (m *metadataFSLoader) Load() (*metadata, error) {
+	metadata, err := m.loadMetadata()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if err := yaml.Unmarshal(annotationsData, &m.annotationsFile, yaml.DisallowUnknownFields); err != nil {
-		return fmt.Errorf("failed to load annotations from %q: %w", AnnotationsFile, err)
+	if err := metadata.validate(); err != nil {
+		return nil, err
 	}
-	return nil
+	return metadata, nil
 }
 
-func (m *metadata) loadMetadataProperties() error {
-	propertiesData, err := fs.ReadFile(m.fsys, PropertiesFile)
+const (
+	annotationsFileName  = "annotations.yaml"
+	propertiesFileName   = "properties.yaml"
+	dependenciesFileName = "dependencies.yaml"
+)
+
+func (m *metadataFSLoader) loadAnnotations() (*AnnotationsFile, error) {
+	data, err := fs.ReadFile(m.fsys, annotationsFileName)
+	if err != nil {
+		return nil, err
+	}
+	f, err := NewYAMLDataFile[Annotations](annotationsFileName, data)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing %s: %v", annotationsFileName, err)
+	}
+	return f, err
+}
+
+func (m *metadataFSLoader) loadProperties() (*PropertiesFile, error) {
+	data, err := fs.ReadFile(m.fsys, propertiesFileName)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil
+			return nil, nil
 		}
-		return err
+		return nil, err
 	}
-	if err := yaml.Unmarshal(propertiesData, &m.propertiesFile, yaml.DisallowUnknownFields); err != nil {
-		return fmt.Errorf("failed to load properties from %q: %w", PropertiesFile, err)
+	f, err := NewYAMLDataFile[Properties](propertiesFileName, data)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing %s: %v", propertiesFileName, err)
 	}
-	return nil
+	return f, err
 }
-
-func (m *metadata) loadMetadataDependencies() error {
-	dependenciesData, err := fs.ReadFile(m.fsys, DependenciesFile)
+func (m *metadataFSLoader) loadDependencies() (*DependenciesFile, error) {
+	data, err := fs.ReadFile(m.fsys, dependenciesFileName)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil
+			return nil, nil
 		}
-		return err
+		return nil, err
 	}
-	if err := yaml.Unmarshal(dependenciesData, &m.dependenciesFile, yaml.DisallowUnknownFields); err != nil {
-		return fmt.Errorf("failed to load dependencies from %q: %w", DependenciesFile, err)
+	f, err := NewYAMLDataFile[Dependencies](dependenciesFileName, data)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing %s: %v", dependenciesFileName, err)
 	}
-	return nil
+	return f, err
 }
 
 func (m *metadata) validate() error {
@@ -116,9 +184,16 @@ func (m *metadata) validate() error {
 	return errors.Join(validationErrors...)
 }
 
+const (
+	annotationMediaType = "operators.operatorframework.io.bundle.mediatype.v1"
+	annotationManifests = "operators.operatorframework.io.bundle.manifests.v1"
+	annotationMetadata  = "operators.operatorframework.io.bundle.metadata.v1"
+	annotationPackage   = "operators.operatorframework.io.bundle.package.v1"
+)
+
 func (m *metadata) validateAnnotations() error {
 	if err := func() error {
-		if m.annotationsFile.Annotations == nil {
+		if len(m.annotationsFile.Value().Annotations) == 0 {
 			return errors.New("no annotations found")
 		}
 
@@ -140,10 +215,10 @@ func (m *metadata) validateAnnotations() error {
 		}
 
 		requiredAnnotations := map[string]func(k, v string) error{
-			AnnotationMediaType: requireEqual(MediaType),
-			AnnotationManifests: requireEqual(ManifestsDirectory),
-			AnnotationMetadata:  requireEqual(MetadataDirectory),
-			AnnotationPackage: requireValid(func(in string) error {
+			annotationMediaType: requireEqual(mediaType),
+			annotationManifests: requireEqual(manifestsDirectory),
+			annotationMetadata:  requireEqual(metadataDirectory),
+			annotationPackage: requireValid(func(in string) error {
 				errs := validation.IsDNS1123Subdomain(in)
 				if len(errs) > 0 {
 					return errors.New(strings.Join(errs, ", "))
@@ -154,7 +229,7 @@ func (m *metadata) validateAnnotations() error {
 
 		var validationErrors []error
 		for _, key := range slices.Sorted(maps.Keys(requiredAnnotations)) {
-			value, ok := m.annotationsFile.Annotations[key]
+			value, ok := m.annotationsFile.Value().Annotations[key]
 			if !ok {
 				validationErrors = append(validationErrors, fmt.Errorf("required key %q not found", key))
 				continue
@@ -174,7 +249,10 @@ func (m *metadata) validateAnnotations() error {
 }
 
 func (m *metadata) validateProperties() error {
-	if err := do(
+	if m.propertiesFile == nil {
+		return nil
+	}
+	if err := internal.DoAll(
 		m.validatePropertyTypeValues,
 		m.validatePropertiesNoReservedUsage,
 	); err != nil {
@@ -185,7 +263,7 @@ func (m *metadata) validateProperties() error {
 
 func (m *metadata) validatePropertyTypeValues() error {
 	var errs []error
-	for i, prop := range m.propertiesFile.Properties {
+	for i, prop := range m.propertiesFile.Value().Properties {
 		validator := validatorFor(prop.Type, propertyScheme, true)
 		if err := validator(prop.Value); err != nil {
 			errs = append(errs, fmt.Errorf("property at index %d with type %q is invalid: %w", i, prop.Type, err))
@@ -200,12 +278,12 @@ func (m *metadata) validatePropertyTypeValues() error {
 
 func (m *metadata) validatePropertiesNoReservedUsage() error {
 	reserved := sets.New[string](
-		TypePropertyPackage,
-		TypePropertyGVK,
+		typePropertyPackage,
+		typePropertyGVK,
 	)
 
 	found := sets.New[string]()
-	for _, prop := range m.propertiesFile.Properties {
+	for _, prop := range m.propertiesFile.Value().Properties {
 		if reserved.Has(prop.Type) {
 			found.Insert(prop.Type)
 		}
@@ -217,8 +295,11 @@ func (m *metadata) validatePropertiesNoReservedUsage() error {
 }
 
 func (m *metadata) validateDependencies() error {
+	if m.dependenciesFile == nil {
+		return nil
+	}
 	var errs []error
-	for i, dep := range m.dependenciesFile.Dependencies {
+	for i, dep := range m.dependenciesFile.Value().Dependencies {
 		validator := validatorFor(dep.Type, dependencyScheme, false)
 		if err := validator(dep.Value); err != nil {
 			errs = append(errs, fmt.Errorf("dependency at index %d with type %q is invalid: %w", i, dep.Type, err))
@@ -233,7 +314,7 @@ func (m *metadata) validateDependencies() error {
 }
 
 type typeValidator interface {
-	Validate() error
+	validate() error
 }
 
 func validatorFor(typ string, scheme map[string]func() typeValidator, allowAny bool) func(json.RawMessage) error {
@@ -258,7 +339,7 @@ func validatorFor(typ string, scheme map[string]func() typeValidator, allowAny b
 			errs = append(errs, fmt.Errorf("value is required"))
 		} else if err := json.Unmarshal(value, v); err != nil {
 			errs = append(errs, fmt.Errorf("failed to unmarshal value %q: %v", string(value), err))
-		} else if err := v.Validate(); err != nil {
+		} else if err := v.validate(); err != nil {
 			errs = append(errs, fmt.Errorf("failed to validate value %q: %v", string(value), err))
 		}
 
@@ -267,40 +348,33 @@ func validatorFor(typ string, scheme map[string]func() typeValidator, allowAny b
 }
 
 const (
-	TypePropertyPackage         = "olm.package"
-	TypePropertyGVK             = "olm.gvk"
-	TypePropertyPackageRequired = "olm.package.required"
-	TypePropertyGVKRequired     = "olm.gvk.required"
+	typePropertyPackage         = "olm.package"
+	typePropertyGVK             = "olm.gvk"
+	typePropertyPackageRequired = "olm.package.required"
+	typePropertyGVKRequired     = "olm.gvk.required"
 
-	TypeDependencyPackage = "olm.package"
-	TypeDependencyGVK     = "olm.gvk"
+	typeDependencyPackage = "olm.package"
+	typeDependencyGVK     = "olm.gvk"
 )
 
 var (
 	propertyScheme = map[string]func() typeValidator{
-		TypePropertyPackageRequired: func() typeValidator { return &PropertyPackageRequired{} },
-		TypePropertyGVKRequired:     func() typeValidator { return &GVK{} },
+		typePropertyPackageRequired: func() typeValidator { return &propertyPackageRequired{} },
+		typePropertyGVKRequired:     func() typeValidator { return &gvk{} },
 	}
 
 	dependencyScheme = map[string]func() typeValidator{
-		TypeDependencyPackage: func() typeValidator { return &DependencyPackage{} },
-		TypeDependencyGVK:     func() typeValidator { return &GVK{} },
+		typeDependencyPackage: func() typeValidator { return &dependencyPackage{} },
+		typeDependencyGVK:     func() typeValidator { return &gvk{} },
 	}
 )
 
-type Property struct {
-	Type  string          `json:"type"`
-	Value json.RawMessage `json:"value"`
-}
-
-type Dependency = Property
-
-type PropertyPackageRequired struct {
+type propertyPackageRequired struct {
 	PackageName  string `json:"packageName"`
 	VersionRange string `json:"versionRange"`
 }
 
-func (p *PropertyPackageRequired) Validate() error {
+func (p *propertyPackageRequired) validate() error {
 	var errs []error
 	if err := validatePackageName(p.PackageName); err != nil {
 		errs = append(errs, err)
@@ -315,16 +389,16 @@ type anyJSON struct {
 	json.RawMessage
 }
 
-func (p *anyJSON) Validate() error {
+func (p *anyJSON) validate() error {
 	return nil
 }
 
-type DependencyPackage struct {
+type dependencyPackage struct {
 	PackageName string `json:"packageName"`
 	Version     string `json:"version"`
 }
 
-func (d *DependencyPackage) Validate() error {
+func (d *dependencyPackage) validate() error {
 	var errs []error
 	if err := validatePackageName(d.PackageName); err != nil {
 		errs = append(errs, err)
@@ -335,7 +409,7 @@ func (d *DependencyPackage) Validate() error {
 	return errors.Join(errs...)
 }
 
-type GVK struct {
+type gvk struct {
 	Group   string `json:"group"`
 	Version string `json:"version"`
 	Kind    string `json:"kind"`
@@ -351,7 +425,7 @@ var (
 	kindRegexp    = regexp.MustCompile(kindPattern)
 )
 
-func (p *GVK) Validate() error {
+func (p *gvk) validate() error {
 	var errs []error
 	if p.Group == "" {
 		errs = append(errs, fmt.Errorf("group is required"))

@@ -1,209 +1,189 @@
 package v1
 
 import (
-	"encoding/json"
 	"io/fs"
 	"maps"
 	"testing"
 	"testing/fstest"
 
 	"github.com/stretchr/testify/require"
-	"sigs.k8s.io/yaml"
+	"k8s.io/utils/ptr"
 )
 
-func Test_metadata_load(t *testing.T) {
-	loadableAnnotations, _ := yaml.Marshal(map[string]any{"annotations": map[string]string{"foo": "bar"}})
-	loadableProperties, _ := yaml.Marshal(map[string]any{"properties": []Property{{Type: "fizz", Value: json.RawMessage(`["buzz"]`)}}})
-	loadableDependencies, _ := yaml.Marshal(map[string]any{"dependencies": []Property{{Type: "tic", Value: json.RawMessage(`{"tac":"toe"}`)}}})
-
+func Test_metadataFSLoader_loadMetadata(t *testing.T) {
 	tests := []struct {
 		name      string
 		fsys      fs.FS
-		expected  metadata
+		expected  *metadata
 		assertErr require.ErrorAssertionFunc
 	}{
 		{
-			name: "metadata loads minimum required files successfully",
+			name: "loads minimum metadata successfully",
 			fsys: fstest.MapFS{
-				AnnotationsFile: &fstest.MapFile{Data: loadableAnnotations},
+				annotationsFileName: &fstest.MapFile{Data: []byte(`annotations: {}`)},
 			},
-			expected: metadata{
-				annotationsFile: Annotations{Annotations: map[string]string{"foo": "bar"}},
+			expected: &metadata{
+				annotationsFile: NewPrecomputedFile[Annotations](annotationsFileName, []byte(`annotations: {}`), Annotations{Annotations: map[string]string{}}),
 			},
 			assertErr: require.NoError,
 		},
 		{
-			name: "metadata loads all files successfully",
+			name: "loads all metadata successfully",
 			fsys: fstest.MapFS{
-				AnnotationsFile:  &fstest.MapFile{Data: loadableAnnotations},
-				PropertiesFile:   &fstest.MapFile{Data: loadableProperties},
-				DependenciesFile: &fstest.MapFile{Data: loadableDependencies},
+				annotationsFileName:  &fstest.MapFile{Data: []byte(`annotations: {"foo": "bar"}`)},
+				propertiesFileName:   &fstest.MapFile{Data: []byte(`properties: [{"type":"a", "value":[]}]`)},
+				dependenciesFileName: &fstest.MapFile{Data: []byte(`dependencies: [{"type":"b", "value":{}}]`)},
 			},
-			expected: metadata{
-				annotationsFile: Annotations{Annotations: map[string]string{"foo": "bar"}},
-				propertiesFile: Properties{Properties: []Property{
-					{Type: "fizz", Value: json.RawMessage(`["buzz"]`)},
-				}},
-				dependenciesFile: Dependencies{Dependencies: []Dependency{
-					{Type: "tic", Value: json.RawMessage(`{"tac":"toe"}`)},
-				}},
+			expected: &metadata{
+				annotationsFile: NewPrecomputedFile[Annotations](annotationsFileName, []byte(`annotations: {"foo": "bar"}`),
+					Annotations{Annotations: map[string]string{"foo": "bar"}}),
+				propertiesFile: ptr.To(NewPrecomputedFile[Properties](propertiesFileName, []byte(`properties: [{"type":"a", "value":[]}]`),
+					Properties{Properties: []Property{{Type: "a", Value: []byte(`[]`)}}})),
+				dependenciesFile: ptr.To(NewPrecomputedFile[Dependencies](dependenciesFileName, []byte(`dependencies: [{"type":"b", "value":{}}]`),
+					Dependencies{Dependencies: []Dependency{{Type: "b", Value: []byte(`{}`)}}})),
 			},
 			assertErr: require.NoError,
 		},
 		{
-			name: "metadata load fails due to missing annotations",
-			fsys: fstest.MapFS{},
-			assertErr: func(t require.TestingT, err error, i ...interface{}) {
-				require.ErrorContains(t, err, "open annotations.yaml: file does not exist")
-			},
-		},
-		{
-			name: "metadata load fails due to malformed annotations",
+			name: "fails due to invalid yaml",
 			fsys: fstest.MapFS{
-				AnnotationsFile: &fstest.MapFile{Data: []byte(`{"foo":"bar"}`)},
+				"annotations.yaml":  &fstest.MapFile{Data: []byte(`}`)},
+				"properties.yaml":   &fstest.MapFile{Data: []byte(`}`)},
+				"dependencies.yaml": &fstest.MapFile{Data: []byte(`}`)},
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
-				require.ErrorContains(t, err, `failed to load annotations from "annotations.yaml"`)
-				require.ErrorContains(t, err, `unknown field "foo"`)
-			},
-		},
-		{
-			name: "metadata load fails due to malformed properties",
-			fsys: fstest.MapFS{
-				AnnotationsFile: &fstest.MapFile{Data: loadableAnnotations},
-				PropertiesFile:  &fstest.MapFile{Data: []byte(`{"foo":"bar"}`)},
-			},
-			expected: metadata{
-				annotationsFile: Annotations{Annotations: map[string]string{"foo": "bar"}},
-			},
-			assertErr: func(t require.TestingT, err error, i ...interface{}) {
-				require.ErrorContains(t, err, `failed to load properties from "properties.yaml"`)
-				require.ErrorContains(t, err, `unknown field "foo"`)
-			},
-		},
-		{
-			name: "metadata load fails due to malformed dependencies",
-			fsys: fstest.MapFS{
-				AnnotationsFile:  &fstest.MapFile{Data: loadableAnnotations},
-				DependenciesFile: &fstest.MapFile{Data: []byte(`{"foo":"bar"}`)},
-			},
-			expected: metadata{
-				annotationsFile: Annotations{Annotations: map[string]string{"foo": "bar"}},
-			},
-			assertErr: func(t require.TestingT, err error, i ...interface{}) {
-				require.ErrorContains(t, err, `failed to load dependencies from "dependencies.yaml"`)
-				require.ErrorContains(t, err, `unknown field "foo"`)
+				require.ErrorContains(t, err, "error parsing annotations.yaml")
+				require.ErrorContains(t, err, "error parsing properties.yaml")
+				require.ErrorContains(t, err, "error parsing dependencies.yaml")
 			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := &metadata{fsys: tt.fsys}
-			err := m.load()
+			m := metadataFSLoader{fsys: tt.fsys}
+			metadata, err := m.loadMetadata()
 			tt.assertErr(t, err)
-
-			require.Equal(t, tt.expected.annotationsFile, m.annotationsFile)
-			require.Equal(t, tt.expected.propertiesFile, m.propertiesFile)
-			require.Equal(t, tt.expected.dependenciesFile, m.dependenciesFile)
+			require.Equal(t, tt.expected, metadata)
 		})
 	}
 }
 
-func Test_metadata_validateAnnotations(t *testing.T) {
-	validAnnotations := map[string]string{
-		AnnotationMediaType: MediaType,
-		AnnotationManifests: ManifestsDirectory,
-		AnnotationMetadata:  MetadataDirectory,
-		AnnotationPackage:   "example",
-	}
-
+func Test_Metadata_Validate(t *testing.T) {
 	tests := []struct {
-		name            string
-		annotationsFile Annotations
-		assertErr       require.ErrorAssertionFunc
+		name      string
+		metadata  metadata
+		assertErr require.ErrorAssertionFunc
 	}{
 		{
-			name: "valid annotations",
-			annotationsFile: Annotations{
-				Annotations: validAnnotations,
+			name: "passes all validations",
+			metadata: metadata{
+				annotationsFile: newAnnotationsFile(map[string]string{
+					annotationMediaType: mediaType,
+					annotationManifests: manifestsDirectory,
+					annotationMetadata:  metadataDirectory,
+					annotationPackage:   "example",
+				}),
 			},
 			assertErr: require.NoError,
 		},
 		{
-			name:            "zero annotations is invalid",
-			annotationsFile: Annotations{},
+			name: "validate collects suberrors",
+			metadata: metadata{
+				annotationsFile:  newAnnotationsFile(map[string]string{"foo": "bar"}),
+				propertiesFile:   newPropertiesFile([]Property{{Type: "a"}}),
+				dependenciesFile: newDependenciesFile([]Dependency{{Type: typeDependencyPackage}}),
+			}, assertErr: func(t require.TestingT, err error, i ...interface{}) {
+				require.ErrorContains(t, err, "invalid annotations")
+				require.ErrorContains(t, err, "invalid properties")
+				require.ErrorContains(t, err, "invalid dependencies")
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.metadata.validate()
+			tt.assertErr(t, err)
+		})
+	}
+}
+
+func Test_Metadata_validateAnnotations(t *testing.T) {
+	validAnnotations := map[string]string{
+		annotationMediaType: mediaType,
+		annotationManifests: manifestsDirectory,
+		annotationMetadata:  metadataDirectory,
+		annotationPackage:   "example",
+	}
+
+	tests := []struct {
+		name        string
+		annotations map[string]string
+		assertErr   require.ErrorAssertionFunc
+	}{
+		{
+			name:        "valid annotations",
+			annotations: validAnnotations,
+			assertErr:   require.NoError,
+		},
+		{
+			name:        "zero annotations is invalid",
+			annotations: map[string]string{},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, "no annotations found")
 			},
 		},
 		{
-			name: "missing media type",
-			annotationsFile: Annotations{
-				Annotations: mapWithoutKey(validAnnotations, AnnotationMediaType),
-			},
+			name:        "missing media type",
+			annotations: mapWithoutKey(validAnnotations, annotationMediaType),
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, `required key "operators.operatorframework.io.bundle.mediatype.v1" not found`)
 			},
 		},
 		{
-			name: "missing manifests directory",
-			annotationsFile: Annotations{
-				Annotations: mapWithoutKey(validAnnotations, AnnotationManifests),
-			},
+			name:        "missing manifests directory",
+			annotations: mapWithoutKey(validAnnotations, annotationManifests),
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, `required key "operators.operatorframework.io.bundle.manifests.v1" not found`)
 			},
 		},
 		{
-			name: "missing metadata directory",
-			annotationsFile: Annotations{
-				Annotations: mapWithoutKey(validAnnotations, AnnotationMetadata),
-			},
+			name:        "missing metadata directory",
+			annotations: mapWithoutKey(validAnnotations, annotationMetadata),
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, `required key "operators.operatorframework.io.bundle.metadata.v1" not found`)
 			},
 		},
 		{
-			name: "missing package",
-			annotationsFile: Annotations{
-				Annotations: mapWithoutKey(validAnnotations, AnnotationPackage),
-			},
+			name:        "missing package",
+			annotations: mapWithoutKey(validAnnotations, annotationPackage),
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, `required key "operators.operatorframework.io.bundle.package.v1" not found`)
 			},
 		},
 		{
-			name: "invalid media type",
-			annotationsFile: Annotations{
-				Annotations: mapWithKeyValue(validAnnotations, AnnotationMediaType, "invalid"),
-			},
+			name:        "invalid media type",
+			annotations: mapWithKeyValue(validAnnotations, annotationMediaType, "invalid"),
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, `invalid value for annotation key "operators.operatorframework.io.bundle.mediatype.v1": requires value "registry+v1"`)
 			},
 		},
 		{
-			name: "invalid manifests directory",
-			annotationsFile: Annotations{
-				Annotations: mapWithKeyValue(validAnnotations, AnnotationManifests, "invalid"),
-			},
+			name:        "invalid manifests directory",
+			annotations: mapWithKeyValue(validAnnotations, annotationManifests, "invalid"),
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, `invalid value for annotation key "operators.operatorframework.io.bundle.manifests.v1": requires value "manifests/"`)
 			},
 		},
 		{
-			name: "invalid metadata directory",
-			annotationsFile: Annotations{
-				Annotations: mapWithKeyValue(validAnnotations, AnnotationMetadata, "invalid"),
-			},
+			name:        "invalid metadata directory",
+			annotations: mapWithKeyValue(validAnnotations, annotationMetadata, "invalid"),
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, `invalid value for annotation key "operators.operatorframework.io.bundle.metadata.v1": requires value "metadata/"`)
 			},
 		},
 		{
-			name: "invalid package",
-			annotationsFile: Annotations{
-				Annotations: mapWithKeyValue(validAnnotations, AnnotationPackage, "$package"),
-			},
+			name:        "invalid package",
+			annotations: mapWithKeyValue(validAnnotations, annotationPackage, "$package"),
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, `invalid value for annotation key "operators.operatorframework.io.bundle.package.v1"`)
 				require.ErrorContains(t, err, "RFC 1123 subdomain")
@@ -213,7 +193,7 @@ func Test_metadata_validateAnnotations(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := &metadata{
-				annotationsFile: tt.annotationsFile,
+				annotationsFile: newAnnotationsFile(tt.annotations),
 			}
 			err := m.validateAnnotations()
 			tt.assertErr(t, err)
@@ -221,57 +201,49 @@ func Test_metadata_validateAnnotations(t *testing.T) {
 	}
 }
 
-func Test_metadata_validateProperties(t *testing.T) {
+func Test_Metadata_validateProperties(t *testing.T) {
 	tests := []struct {
-		name           string
-		propertiesFile Properties
-		assertErr      require.ErrorAssertionFunc
+		name       string
+		properties []Property
+		assertErr  require.ErrorAssertionFunc
 	}{
 		{
-			name:           "empty properties is valid",
-			propertiesFile: Properties{},
-			assertErr:      require.NoError,
+			name:       "empty properties is valid",
+			properties: []Property{},
+			assertErr:  require.NoError,
 		},
 		{
 			name: "arbitrary properties are valid",
-			propertiesFile: Properties{
-				Properties: []Property{
-					{Type: "a", Value: []byte(`null`)},
-					{Type: "b", Value: []byte(`0`)},
-					{Type: "c", Value: []byte(`1.1`)},
-					{Type: "d", Value: []byte(`"hello world"`)},
-					{Type: "e", Value: []byte(`[]`)},
-					{Type: "f", Value: []byte(`{}`)},
-				},
+			properties: []Property{
+				{Type: "a", Value: []byte(`null`)},
+				{Type: "b", Value: []byte(`0`)},
+				{Type: "c", Value: []byte(`1.1`)},
+				{Type: "d", Value: []byte(`"hello world"`)},
+				{Type: "e", Value: []byte(`[]`)},
+				{Type: "f", Value: []byte(`{}`)},
 			},
 			assertErr: require.NoError,
 		},
 		{
 			name: "duplicate properties are valid",
-			propertiesFile: Properties{
-				Properties: []Property{
-					{Type: "a", Value: []byte(`[1]`)},
-					{Type: "a", Value: []byte(`[2]`)},
-				},
+			properties: []Property{
+				{Type: "a", Value: []byte(`[1]`)},
+				{Type: "a", Value: []byte(`[2]`)},
 			},
 			assertErr: require.NoError,
 		},
 		{
 			name: "using property variants of dependencies is valid",
-			propertiesFile: Properties{
-				Properties: []Property{
-					{Type: TypePropertyPackageRequired, Value: []byte(`{"packageName":"foo","versionRange":"<=1.2.3"}`)},
-					{Type: TypePropertyGVKRequired, Value: []byte(`{"group":"example.com","version":"v1","kind":"Foo"}`)},
-				},
+			properties: []Property{
+				{Type: typePropertyPackageRequired, Value: []byte(`{"packageName":"foo","versionRange":"<=1.2.3"}`)},
+				{Type: typePropertyGVKRequired, Value: []byte(`{"group":"example.com","version":"v1","kind":"Foo"}`)},
 			},
 			assertErr: require.NoError,
 		},
 		{
 			name: "use of reserved olm.package is invalid",
-			propertiesFile: Properties{
-				Properties: []Property{
-					{Type: TypePropertyPackage, Value: []byte(`{"packageName":"foo","version":"1.2.3"}`)},
-				},
+			properties: []Property{
+				{Type: typePropertyPackage, Value: []byte(`{"packageName":"foo","version":"1.2.3"}`)},
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, "found reserved properties")
@@ -279,10 +251,8 @@ func Test_metadata_validateProperties(t *testing.T) {
 		},
 		{
 			name: "use of reserved olm.gvk is invalid",
-			propertiesFile: Properties{
-				Properties: []Property{
-					{Type: TypePropertyGVK, Value: []byte(`{"group":"example.com","version":"v1","kind":"Foo"}`)},
-				},
+			properties: []Property{
+				{Type: typePropertyGVK, Value: []byte(`{"group":"example.com","version":"v1","kind":"Foo"}`)},
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, "found reserved properties")
@@ -290,12 +260,11 @@ func Test_metadata_validateProperties(t *testing.T) {
 		},
 		{
 			name: "olm.package.required must have package name",
-			propertiesFile: Properties{
-				Properties: []Property{
-					{Type: TypePropertyPackageRequired, Value: []byte(`{"packageName":"","versionRange":"<=1.2.3"}`)},
-					{Type: TypePropertyPackageRequired, Value: []byte(`{"versionRange":"<=1.2.3"}`)},
-				},
+			properties: []Property{
+				{Type: typePropertyPackageRequired, Value: []byte(`{"packageName":"","versionRange":"<=1.2.3"}`)},
+				{Type: typePropertyPackageRequired, Value: []byte(`{"versionRange":"<=1.2.3"}`)},
 			},
+
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, `failed to validate value "{\"packageName\":\"\",\"versionRange\":\"<=1.2.3\"}": packageName is required`)
 				require.ErrorContains(t, err, `failed to validate value "{\"versionRange\":\"<=1.2.3\"}": packageName is required`)
@@ -303,10 +272,8 @@ func Test_metadata_validateProperties(t *testing.T) {
 		},
 		{
 			name: "olm.package.required package name must be a DNS 1123 subdomain",
-			propertiesFile: Properties{
-				Properties: []Property{
-					{Type: TypePropertyPackageRequired, Value: []byte(`{"packageName":"$foo","versionRange":"<=1.2.3"}`)},
-				},
+			properties: []Property{
+				{Type: typePropertyPackageRequired, Value: []byte(`{"packageName":"$foo","versionRange":"<=1.2.3"}`)},
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, `packageName "$foo" is invalid: a lowercase RFC 1123 subdomain must consist of`)
@@ -314,11 +281,9 @@ func Test_metadata_validateProperties(t *testing.T) {
 		},
 		{
 			name: "olm.package.required must have version range",
-			propertiesFile: Properties{
-				Properties: []Property{
-					{Type: TypePropertyPackageRequired, Value: []byte(`{"packageName":"foo","versionRange":""}`)},
-					{Type: TypePropertyPackageRequired, Value: []byte(`{"packageName":"foo"}`)},
-				},
+			properties: []Property{
+				{Type: typePropertyPackageRequired, Value: []byte(`{"packageName":"foo","versionRange":""}`)},
+				{Type: typePropertyPackageRequired, Value: []byte(`{"packageName":"foo"}`)},
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, `failed to validate value "{\"packageName\":\"foo\",\"versionRange\":\"\"}": versionRange is required`)
@@ -327,10 +292,8 @@ func Test_metadata_validateProperties(t *testing.T) {
 		},
 		{
 			name: "olm.package.required version range must be valid",
-			propertiesFile: Properties{
-				Properties: []Property{
-					{Type: TypePropertyPackageRequired, Value: []byte(`{"packageName":"foo","versionRange":"foobar"}`)},
-				},
+			properties: []Property{
+				{Type: typePropertyPackageRequired, Value: []byte(`{"packageName":"foo","versionRange":"foobar"}`)},
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, `versionRange "foobar" is invalid`)
@@ -338,10 +301,8 @@ func Test_metadata_validateProperties(t *testing.T) {
 		},
 		{
 			name: "olm.gvk.required must have group, version, and kind",
-			propertiesFile: Properties{
-				Properties: []Property{
-					{Type: TypePropertyGVKRequired, Value: []byte(`{}`)},
-				},
+			properties: []Property{
+				{Type: typePropertyGVKRequired, Value: []byte(`{}`)},
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, `group is required`)
@@ -351,10 +312,8 @@ func Test_metadata_validateProperties(t *testing.T) {
 		},
 		{
 			name: "olm.gvk.required must have valid group, version, and kind",
-			propertiesFile: Properties{
-				Properties: []Property{
-					{Type: TypePropertyGVKRequired, Value: []byte(`{"group":"$foo","version":"bar", "kind":"baz"}`)},
-				},
+			properties: []Property{
+				{Type: typePropertyGVKRequired, Value: []byte(`{"group":"$foo","version":"bar", "kind":"baz"}`)},
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, `group "$foo" is invalid: a lowercase RFC 1123 subdomain must consist`)
@@ -364,10 +323,8 @@ func Test_metadata_validateProperties(t *testing.T) {
 		},
 		{
 			name: "property types must be set",
-			propertiesFile: Properties{
-				Properties: []Property{
-					{Type: "", Value: []byte(`null`)},
-				},
+			properties: []Property{
+				{Type: "", Value: []byte(`null`)},
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, `property at index 0 with type "" is invalid: type is required`)
@@ -375,11 +332,9 @@ func Test_metadata_validateProperties(t *testing.T) {
 		},
 		{
 			name: "empty property values are invalid",
-			propertiesFile: Properties{
-				Properties: []Property{
-					{Type: "a", Value: []byte(``)},
-					{Type: "b", Value: nil},
-				},
+			properties: []Property{
+				{Type: "a", Value: []byte(``)},
+				{Type: "b", Value: nil},
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, `property at index 0 with type "a" is invalid: value is required`)
@@ -388,10 +343,8 @@ func Test_metadata_validateProperties(t *testing.T) {
 		},
 		{
 			name: "non-JSON property values are invalid",
-			propertiesFile: Properties{
-				Properties: []Property{
-					{Type: "a", Value: []byte(`}`)},
-				},
+			properties: []Property{
+				{Type: "a", Value: []byte(`}`)},
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, `property at index 0 with type "a" is invalid: failed to unmarshal value`)
@@ -401,7 +354,7 @@ func Test_metadata_validateProperties(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := &metadata{
-				propertiesFile: tt.propertiesFile,
+				propertiesFile: newPropertiesFile(tt.properties),
 			}
 			err := m.validateProperties()
 			tt.assertErr(t, err)
@@ -409,45 +362,39 @@ func Test_metadata_validateProperties(t *testing.T) {
 	}
 }
 
-func Test_metadata_validateDependencies(t *testing.T) {
+func Test_Metadata_validateDependencies(t *testing.T) {
 	tests := []struct {
-		name             string
-		dependenciesFile Dependencies
-		assertErr        require.ErrorAssertionFunc
+		name         string
+		dependencies []Dependency
+		assertErr    require.ErrorAssertionFunc
 	}{
 		{
-			name:             "empty dependencies is valid",
-			dependenciesFile: Dependencies{},
-			assertErr:        require.NoError,
+			name:         "empty dependencies is valid",
+			dependencies: []Dependency{},
+			assertErr:    require.NoError,
 		},
 		{
 			name: "known dependencies are valid",
-			dependenciesFile: Dependencies{
-				Dependencies: []Dependency{
-					{Type: TypeDependencyPackage, Value: []byte(`{"packageName":"foo","version":"1.2.3"}`)},
-					{Type: TypeDependencyGVK, Value: []byte(`{"group":"example.com","version":"v1","kind":"Foo"}`)},
-				},
+			dependencies: []Dependency{
+				{Type: typeDependencyPackage, Value: []byte(`{"packageName":"foo","version":"1.2.3"}`)},
+				{Type: typeDependencyGVK, Value: []byte(`{"group":"example.com","version":"v1","kind":"Foo"}`)},
 			},
 			assertErr: require.NoError,
 		},
 		{
 			name: "duplicate dependencies of the same type are valid",
-			dependenciesFile: Dependencies{
-				Dependencies: []Dependency{
-					{Type: TypeDependencyPackage, Value: []byte(`{"packageName":"foo","version":"1.2.3"}`)},
-					{Type: TypeDependencyPackage, Value: []byte(`{"packageName":"bar","version":"1.2.3"}`)},
-					{Type: TypeDependencyGVK, Value: []byte(`{"group":"example.com","version":"v1","kind":"Foo"}`)},
-					{Type: TypeDependencyGVK, Value: []byte(`{"group":"example.com","version":"v1","kind":"Bar"}`)},
-				},
+			dependencies: []Dependency{
+				{Type: typeDependencyPackage, Value: []byte(`{"packageName":"foo","version":"1.2.3"}`)},
+				{Type: typeDependencyPackage, Value: []byte(`{"packageName":"bar","version":"1.2.3"}`)},
+				{Type: typeDependencyGVK, Value: []byte(`{"group":"example.com","version":"v1","kind":"Foo"}`)},
+				{Type: typeDependencyGVK, Value: []byte(`{"group":"example.com","version":"v1","kind":"Bar"}`)},
 			},
 			assertErr: require.NoError,
 		},
 		{
 			name: "dependency types must be set",
-			dependenciesFile: Dependencies{
-				Dependencies: []Dependency{
-					{Type: "", Value: []byte(`null`)},
-				},
+			dependencies: []Dependency{
+				{Type: "", Value: []byte(`null`)},
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, `type is required`)
@@ -455,10 +402,8 @@ func Test_metadata_validateDependencies(t *testing.T) {
 		},
 		{
 			name: "unknown dependency types are invalid",
-			dependenciesFile: Dependencies{
-				Dependencies: []Dependency{
-					{Type: "a", Value: []byte(`null`)},
-				},
+			dependencies: []Dependency{
+				{Type: "a", Value: []byte(`null`)},
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, `dependency at index 0 with type "a" is invalid: unknown type`)
@@ -466,13 +411,11 @@ func Test_metadata_validateDependencies(t *testing.T) {
 		},
 		{
 			name: "empty dependency values are invalid",
-			dependenciesFile: Dependencies{
-				Dependencies: []Dependency{
-					{Type: TypeDependencyPackage, Value: []byte(``)},
-					{Type: TypeDependencyPackage, Value: nil},
-					{Type: TypeDependencyGVK, Value: []byte(``)},
-					{Type: TypeDependencyGVK, Value: nil},
-				},
+			dependencies: []Dependency{
+				{Type: typeDependencyPackage, Value: []byte(``)},
+				{Type: typeDependencyPackage, Value: nil},
+				{Type: typeDependencyGVK, Value: []byte(``)},
+				{Type: typeDependencyGVK, Value: nil},
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, `dependency at index 0 with type "olm.package" is invalid: value is required`)
@@ -483,11 +426,9 @@ func Test_metadata_validateDependencies(t *testing.T) {
 		},
 		{
 			name: "non-JSON dependency values are invalid",
-			dependenciesFile: Dependencies{
-				Dependencies: []Dependency{
-					{Type: TypeDependencyPackage, Value: []byte(`}`)},
-					{Type: TypeDependencyGVK, Value: []byte(`}`)},
-				},
+			dependencies: []Dependency{
+				{Type: typeDependencyPackage, Value: []byte(`}`)},
+				{Type: typeDependencyGVK, Value: []byte(`}`)},
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, `dependency at index 0 with type "olm.package" is invalid: failed to unmarshal value`)
@@ -496,11 +437,9 @@ func Test_metadata_validateDependencies(t *testing.T) {
 		},
 		{
 			name: "olm.package must have package name",
-			dependenciesFile: Dependencies{
-				Dependencies: []Dependency{
-					{Type: TypeDependencyPackage, Value: []byte(`{"packageName":"","version":"<=1.2.3"}`)},
-					{Type: TypeDependencyPackage, Value: []byte(`{"version":"<=1.2.3"}`)},
-				},
+			dependencies: []Dependency{
+				{Type: typeDependencyPackage, Value: []byte(`{"packageName":"","version":"<=1.2.3"}`)},
+				{Type: typeDependencyPackage, Value: []byte(`{"version":"<=1.2.3"}`)},
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, `failed to validate value "{\"packageName\":\"\",\"version\":\"<=1.2.3\"}": packageName is required`)
@@ -509,10 +448,8 @@ func Test_metadata_validateDependencies(t *testing.T) {
 		},
 		{
 			name: "olm.package package name must be a DNS 1123 subdomain",
-			dependenciesFile: Dependencies{
-				Dependencies: []Dependency{
-					{Type: TypeDependencyPackage, Value: []byte(`{"packageName":"$foo","version":"<=1.2.3"}`)},
-				},
+			dependencies: []Dependency{
+				{Type: typeDependencyPackage, Value: []byte(`{"packageName":"$foo","version":"<=1.2.3"}`)},
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, `packageName "$foo" is invalid: a lowercase RFC 1123 subdomain must consist of`)
@@ -520,11 +457,9 @@ func Test_metadata_validateDependencies(t *testing.T) {
 		},
 		{
 			name: "olm.package must have version range",
-			dependenciesFile: Dependencies{
-				Dependencies: []Dependency{
-					{Type: TypeDependencyPackage, Value: []byte(`{"packageName":"foo","version":""}`)},
-					{Type: TypeDependencyPackage, Value: []byte(`{"packageName":"foo"}`)},
-				},
+			dependencies: []Dependency{
+				{Type: typeDependencyPackage, Value: []byte(`{"packageName":"foo","version":""}`)},
+				{Type: typeDependencyPackage, Value: []byte(`{"packageName":"foo"}`)},
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, `failed to validate value "{\"packageName\":\"foo\",\"version\":\"\"}": version is required`)
@@ -533,10 +468,8 @@ func Test_metadata_validateDependencies(t *testing.T) {
 		},
 		{
 			name: "olm.package version range must be valid",
-			dependenciesFile: Dependencies{
-				Dependencies: []Dependency{
-					{Type: TypeDependencyPackage, Value: []byte(`{"packageName":"foo","version":"foobar"}`)},
-				},
+			dependencies: []Dependency{
+				{Type: typeDependencyPackage, Value: []byte(`{"packageName":"foo","version":"foobar"}`)},
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, `version "foobar" is invalid`)
@@ -544,10 +477,8 @@ func Test_metadata_validateDependencies(t *testing.T) {
 		},
 		{
 			name: "olm.gvk must have group, version, and kind",
-			dependenciesFile: Dependencies{
-				Dependencies: []Dependency{
-					{Type: TypeDependencyGVK, Value: []byte(`{}`)},
-				},
+			dependencies: []Dependency{
+				{Type: typeDependencyGVK, Value: []byte(`{}`)},
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, `group is required`)
@@ -557,10 +488,8 @@ func Test_metadata_validateDependencies(t *testing.T) {
 		},
 		{
 			name: "olm.gvk must have valid group, version, and kind",
-			dependenciesFile: Dependencies{
-				Dependencies: []Dependency{
-					{Type: TypeDependencyGVK, Value: []byte(`{"group":"$foo","version":"bar", "kind":"baz"}`)},
-				},
+			dependencies: []Dependency{
+				{Type: typeDependencyGVK, Value: []byte(`{"group":"$foo","version":"bar", "kind":"baz"}`)},
 			},
 			assertErr: func(t require.TestingT, err error, i ...interface{}) {
 				require.ErrorContains(t, err, `group "$foo" is invalid: a lowercase RFC 1123 subdomain must consist`)
@@ -575,7 +504,7 @@ func Test_metadata_validateDependencies(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := &metadata{
-				dependenciesFile: tt.dependenciesFile,
+				dependenciesFile: newDependenciesFile(tt.dependencies),
 			}
 			err := m.validateDependencies()
 			tt.assertErr(t, err)
@@ -583,43 +512,18 @@ func Test_metadata_validateDependencies(t *testing.T) {
 	}
 }
 
-func Test_metadata_validate(t *testing.T) {
-	tests := []struct {
-		name      string
-		metadata  metadata
-		assertErr require.ErrorAssertionFunc
-	}{
-		{
-			name: "passes all validations",
-			metadata: metadata{
-				annotationsFile: Annotations{Annotations: map[string]string{
-					AnnotationMediaType: MediaType,
-					AnnotationManifests: ManifestsDirectory,
-					AnnotationMetadata:  MetadataDirectory,
-					AnnotationPackage:   "example",
-				}},
-			},
-			assertErr: require.NoError,
-		},
-		{
-			name: "validate collects suberrors",
-			metadata: metadata{
-				annotationsFile:  Annotations{Annotations: map[string]string{"foo": "bar"}},
-				propertiesFile:   Properties{Properties: []Property{{Type: "a"}}},
-				dependenciesFile: Dependencies{Dependencies: []Dependency{{Type: TypeDependencyPackage}}},
-			}, assertErr: func(t require.TestingT, err error, i ...interface{}) {
-				require.ErrorContains(t, err, "invalid annotations")
-				require.ErrorContains(t, err, "invalid properties")
-				require.ErrorContains(t, err, "invalid dependencies")
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := tt.metadata.validate()
-			tt.assertErr(t, err)
-		})
-	}
+func newAnnotationsFile(annotations map[string]string) AnnotationsFile {
+	return NewPrecomputedFile[Annotations](annotationsFileName, nil, Annotations{Annotations: annotations})
+}
+
+func newPropertiesFile(properties []Property) *PropertiesFile {
+	f := NewPrecomputedFile[Properties](propertiesFileName, nil, Properties{Properties: properties})
+	return &f
+}
+
+func newDependenciesFile(dependencies []Dependency) *DependenciesFile {
+	f := NewPrecomputedFile[Dependencies](dependenciesFileName, nil, Dependencies{Dependencies: dependencies})
+	return &f
 }
 
 func mapWithoutKey[K comparable, V any](m map[K]V, key K) map[K]V {
