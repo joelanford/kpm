@@ -2,6 +2,7 @@ package v1
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -16,7 +17,9 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/apimachinery/pkg/version"
 	"k8s.io/cli-runtime/pkg/resource"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -158,7 +161,9 @@ func (m manifestFiles) validate() error {
 		m.validateNoSubDirectories,
 		m.validateOneObjectPerFile,
 		m.validateExactlyOneCSV,
+		m.validateUniqueGroupKindName,
 		m.validateSupportedKinds,
+		m.validateOwnedAPIs,
 	} {
 		if err := validationFn(); err != nil {
 			validationErrors = append(validationErrors, err)
@@ -236,6 +241,106 @@ func (m manifestFiles) validateSupportedKinds() error {
 	}
 	if len(unsupported) > 0 {
 		return fmt.Errorf("found unsupported kinds: %v", strings.Join(unsupported, ", "))
+	}
+	return nil
+}
+
+type nameVersion struct {
+	name    string
+	version string
+}
+
+func (nv *nameVersion) Compare(other nameVersion) int {
+	if v := cmp.Compare(nv.name, other.name); v != 0 {
+		return v
+	}
+	return version.CompareKubeAwareVersionStrings(nv.version, other.version)
+}
+
+func (m manifestFiles) validateOwnedAPIs() error {
+
+	var (
+		crdNVKs = sets.New[nameVersion]()
+		csvNVKs = sets.New[nameVersion]()
+	)
+
+	for _, mf := range m {
+		for _, obj := range mf.Value() {
+			switch val := obj.(type) {
+			case *apiextensionsv1.CustomResourceDefinition:
+				for _, crdVersion := range val.Spec.Versions {
+					crdNVKs.Insert(nameVersion{
+						name:    val.Name,
+						version: crdVersion.Name,
+					})
+				}
+			case *v1alpha1.ClusterServiceVersion:
+				for _, ownedAPI := range val.Spec.CustomResourceDefinitions.Owned {
+					csvNVKs.Insert(nameVersion{
+						name:    ownedAPI.Name,
+						version: ownedAPI.Version,
+					})
+				}
+			}
+		}
+	}
+
+	var errs []error
+	if crdOnly := crdNVKs.Difference(csvNVKs); crdOnly.Len() > 0 {
+		crdOnlySorted := crdOnly.UnsortedList()
+		slices.SortFunc(crdOnlySorted, func(a, b nameVersion) int {
+			return a.Compare(b)
+		})
+		for _, crd := range crdOnlySorted {
+			errs = append(errs, fmt.Errorf("CRD %q, version %q not owned by CSV", crd.name, crd.version))
+		}
+	}
+	if csvOnly := csvNVKs.Difference(crdNVKs); csvOnly.Len() > 0 {
+		csvOnlySorted := csvOnly.UnsortedList()
+		slices.SortFunc(csvOnlySorted, func(a, b nameVersion) int {
+			return a.Compare(b)
+		})
+		for _, crd := range csvOnlySorted {
+			errs = append(errs, fmt.Errorf("CSV-owned CRD %q, version %q not found in manifests", crd.name, crd.version))
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return fmt.Errorf("mismatch between CRDs and CSV.spec.customresourcedefinitions.owned: %v", err)
+	}
+	return nil
+}
+
+type gkn struct {
+	schema.GroupKind
+	Name string
+}
+
+func (v gkn) String() string {
+	return fmt.Sprintf("%s/%s", v.GroupKind, v.Name)
+}
+
+func (m manifestFiles) validateUniqueGroupKindName() error {
+	counts := make(map[gkn]int, len(m))
+	for _, mf := range m {
+		for _, obj := range mf.Value() {
+			key := gkn{
+				GroupKind: obj.GetObjectKind().GroupVersionKind().GroupKind(),
+				Name:      client.ObjectKeyFromObject(obj).Name,
+			}
+			counts[key]++
+		}
+	}
+
+	var dups []string
+	for key, count := range counts {
+		if count <= 1 {
+			continue
+		}
+		dups = append(dups, key.String())
+	}
+	slices.Sort(dups)
+	if len(dups) > 0 {
+		return fmt.Errorf("duplicate group kind names: %v", strings.Join(dups, ", "))
 	}
 	return nil
 }

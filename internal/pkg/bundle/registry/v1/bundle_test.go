@@ -34,10 +34,22 @@ metadata:
   name: example.v1.2.3
 spec:
   version: "1.2.3"
+  customresourcedefinitions:
+    owned:
+      - name: resources.group.example.com
+        version: v1alpha1
+        kind: Resource
 `)},
 				"manifests/crd.yaml": &fstest.MapFile{Data: []byte(`
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
+metadata:
+  name: resources.group.example.com
+spec:
+  names:
+    kind: Resource
+  versions:
+    - name: v1alpha1
 `)},
 				"manifests/secret.yaml": &fstest.MapFile{Data: []byte(`
 apiVersion: v1
@@ -62,11 +74,23 @@ metadata:
   name: example.v1.2.3
 spec:
   version: "1.2.3"
+  customresourcedefinitions:
+    owned:
+      - name: resources.group.example.com
+        version: v1alpha1
+        kind: Resource
 `)),
 					crds: []File[*apiextensionsv1.CustomResourceDefinition]{
 						newCRDFromData(t, "crd.yaml", []byte(`
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
+metadata:
+  name: resources.group.example.com
+spec:
+  names:
+    kind: Resource
+  versions:
+    - name: v1alpha1
 `)),
 					},
 					others: []File[client.Object]{
