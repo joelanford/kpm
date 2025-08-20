@@ -1,6 +1,8 @@
 package v1
 
 import (
+	"context"
+	"fmt"
 	"io/fs"
 	"testing"
 	"testing/fstest"
@@ -12,6 +14,7 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/utils/ptr"
 	"oras.land/oras-go/v2/content/memory"
+	"oras.land/oras-go/v2/content/oci"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/operator-framework/api/pkg/operators/v1alpha1"
@@ -118,7 +121,7 @@ annotations:
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			l := NewBundleFSLoader(tt.fsys)
-			actual, err := l.Load()
+			actual, err := l.Load(t.Context())
 			tt.assertErr(t, err)
 			require.Equal(t, tt.expected, actual)
 		})
@@ -232,4 +235,26 @@ func newFromData[T any](t *testing.T, filename string, data []byte) File[T] {
 	f, err := NewYAMLDataFile[T](filename, data)
 	require.NoError(t, err)
 	return *f
+}
+
+func Example_bundleOCILoader() {
+	ros, err := oci.NewFromTar(context.Background(), "../../../../../demos/bundles/registryv1/argocd-operator/argocd-operator.v1.10.1.kpm")
+	if err != nil {
+		panic(err)
+	}
+	var tags []string
+	if err := ros.Tags(context.Background(), "", func(v []string) error {
+		tags = v
+		return nil
+	}); err != nil {
+		panic(err)
+	}
+	b, err := NewBundleOCILoader(ros, tags[0]).Load(context.Background())
+	if err != nil {
+		fmt.Println("ERROR:", err)
+		return
+	}
+	fmt.Println(b.ID())
+
+	// Output: argocd-operator.v1.10.1
 }

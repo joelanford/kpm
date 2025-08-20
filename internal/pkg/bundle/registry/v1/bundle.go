@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"archive/tar"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -10,16 +11,21 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"testing/fstest"
+	"time"
 
+	"github.com/containerd/containerd/archive"
+	"github.com/containerd/containerd/archive/compression"
+	"github.com/go-logr/logr"
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2"
 	"oras.land/oras-go/v2/content"
 
-	"github.com/operator-framework/kpm/internal/pkg/util/tar"
+	tarutil "github.com/operator-framework/kpm/internal/pkg/util/tar"
 )
 
 const (
@@ -34,7 +40,7 @@ type Bundle struct {
 }
 
 type BundleLoader interface {
-	Load() (*Bundle, error)
+	Load(context.Context) (*Bundle, error)
 }
 
 type bundleFSLoader struct {
@@ -45,7 +51,7 @@ func NewBundleFSLoader(fsys fs.FS) BundleLoader {
 	return &bundleFSLoader{fsys: fsys}
 }
 
-func (b *bundleFSLoader) Load() (*Bundle, error) {
+func (b *bundleFSLoader) Load(_ context.Context) (*Bundle, error) {
 	manifestsFS, manifestsFSErr := fs.Sub(b.fsys, filepath.Clean(manifestsDirectory))
 	metadataFS, metadataFSErr := fs.Sub(b.fsys, filepath.Clean(metadataDirectory))
 	if err := errors.Join(manifestsFSErr, metadataFSErr); err != nil {
@@ -64,6 +70,15 @@ func (b *bundleFSLoader) Load() (*Bundle, error) {
 	return &Bundle{manifests: bundleManifests, metadata: bundleMetadata}, nil
 }
 
+type bundleOCILoader struct {
+	src oras.ReadOnlyTarget
+	ref string
+}
+
+func NewBundleOCILoader(src oras.ReadOnlyTarget, ref string) BundleLoader {
+	return &bundleOCILoader{src: src, ref: ref}
+}
+
 func (b *Bundle) tag() string {
 	return b.manifests.CSV().Value().Spec.Version.String()
 }
@@ -74,6 +89,87 @@ func (b *Bundle) ID() string {
 
 func (b *Bundle) imageNameTag() string {
 	return fmt.Sprintf("%s:%s", b.metadata.PackageName(), b.tag())
+}
+
+func (b *bundleOCILoader) Load(ctx context.Context) (*Bundle, error) {
+	// Resolve the reference
+	desc, err := b.src.Resolve(ctx, b.ref)
+	if err != nil {
+		return nil, fmt.Errorf("error resolving ref %q: %v", b.ref, err)
+	}
+
+	// A registry+v1 bundle is expected to be an OCI manifest (or compatible), not an OCI Index, not a Docker Manifest List.
+	if desc.MediaType != ocispec.MediaTypeImageManifest {
+		return nil, fmt.Errorf(`unexpected media type %q: registry+v1 bundles are expected to be OCI image manifests`, desc.MediaType)
+	}
+
+	// Unmarshal the manifest
+	manifestRC, err := b.src.Fetch(ctx, desc)
+	if err != nil {
+		return nil, fmt.Errorf("error fetching manifest: %v", err)
+	}
+	defer manifestRC.Close()
+	manifestBytes, err := io.ReadAll(manifestRC)
+	if err != nil {
+		return nil, fmt.Errorf("error reading manifest: %v", err)
+	}
+	var manifest ocispec.Manifest
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		return nil, fmt.Errorf("error unmarshaling manifest: %v", err)
+	}
+
+	// Unmarshal the image config
+	configRC, err := b.src.Fetch(ctx, manifest.Config)
+	if err != nil {
+		return nil, fmt.Errorf("error fetching config: %v", err)
+	}
+	defer configRC.Close()
+	configBytes, err := io.ReadAll(configRC)
+	if err != nil {
+		return nil, fmt.Errorf("error reading config: %v", err)
+	}
+	var config ocispec.Image
+	if err := json.Unmarshal(configBytes, &config); err != nil {
+		return nil, fmt.Errorf("error unmarshaling config: %v", err)
+	}
+
+	// Un-tar the layers
+	tmpDir, err := os.MkdirTemp("", "kpm-unmarshal-oci")
+	if err != nil {
+		return nil, fmt.Errorf("error creating temp directory: %v", err)
+	}
+	defer func() {
+		if err := os.RemoveAll(tmpDir); err != nil {
+			logr.FromContextOrDiscard(ctx).Error(err, "failed to remove temporary directory", "tmpDir", tmpDir)
+		}
+	}()
+	for _, layer := range manifest.Layers {
+		layerRC, err := b.src.Fetch(ctx, layer)
+		if err != nil {
+			return nil, fmt.Errorf("error fetching layer: %v", err)
+		}
+		defer layerRC.Close()
+
+		decompressed, err := compression.DecompressStream(layerRC)
+		if err != nil {
+			return nil, fmt.Errorf("error decompressing layer: %v", err)
+		}
+		defer decompressed.Close()
+		if _, err := archive.Apply(ctx, tmpDir, decompressed, archive.WithFilter(func(header *tar.Header) (bool, error) {
+			header.PAXRecords = nil
+			header.Xattrs = nil
+			header.ChangeTime = time.Time{}
+			header.ModTime = time.Time{}
+			header.ChangeTime = time.Time{}
+			header.Uid = os.Getuid()
+			header.Gid = os.Getgid()
+			header.Mode |= 0600
+			return true, nil
+		})); err != nil {
+			return nil, fmt.Errorf("error applying tar layer: %v", err)
+		}
+	}
+	return NewBundleFSLoader(os.DirFS(tmpDir)).Load(ctx)
 }
 
 func (b *Bundle) MarshalOCI(ctx context.Context, target oras.Target) (ocispec.Descriptor, error) {
@@ -119,7 +215,7 @@ func (b *Bundle) pushConfigAndLayers(ctx context.Context, pusher content.Pusher)
 		gzipWriter := gzip.NewWriter(&layerData)
 		defer gzipWriter.Close()
 		mw := io.MultiWriter(diffIDHash, gzipWriter)
-		return tar.Directory(mw, bundleFS)
+		return tarutil.Directory(mw, bundleFS)
 	}(); err != nil {
 		return ocispec.Descriptor{}, nil, err
 	}

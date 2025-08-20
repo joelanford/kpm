@@ -1,6 +1,7 @@
 package spec
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,7 +30,7 @@ func loadRegistryV1(spec specsv1.RegistryV1, workingDir string) (Spec, error) {
 	switch spec.Source.SourceType {
 	case specsv1.RegistryV1SourceTypeBundleDirectory:
 		l := registryv1.NewBundleFSLoader(os.DirFS(filepath.Join(workingDir, spec.Source.BundleDirectory.Path)))
-		return l.Load()
+		return l.Load(context.TODO())
 	default:
 		return nil, fmt.Errorf("unknown source type: %q", spec.Source.SourceType)
 	}
