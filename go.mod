@@ -1,4 +1,4 @@
-module github.com/joelanford/kpm
+module github.com/operator-framework/kpm
 
 go 1.24.3
 

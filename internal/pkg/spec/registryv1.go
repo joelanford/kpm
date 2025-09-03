@@ -7,8 +7,8 @@ import (
 
 	"sigs.k8s.io/yaml"
 
-	specsv1 "github.com/joelanford/kpm/internal/api/specs/v1"
-	registryv1 "github.com/joelanford/kpm/internal/pkg/bundle/registry/v1"
+	specsv1 "github.com/operator-framework/kpm/internal/api/specs/v1"
+	registryv1 "github.com/operator-framework/kpm/internal/pkg/bundle/registry/v1"
 )
 
 func init() {

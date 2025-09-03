@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/joelanford/kpm/internal/pkg/spec"
+	"github.com/operator-framework/kpm/internal/pkg/spec"
 )
 
 func Build() *cobra.Command {

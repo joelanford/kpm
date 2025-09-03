@@ -3,7 +3,7 @@ package main
 import (
 	"log"
 
-	"github.com/joelanford/kpm/internal/cli"
+	"github.com/operator-framework/kpm/internal/cli"
 )
 
 func main() {
