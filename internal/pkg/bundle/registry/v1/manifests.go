@@ -25,7 +25,7 @@ import (
 
 	"github.com/operator-framework/api/pkg/operators/v1alpha1"
 
-	"github.com/joelanford/kpm/internal/pkg/bundle/registry/internal"
+	"github.com/operator-framework/kpm/internal/pkg/bundle/registry/internal"
 )
 
 type manifests struct {

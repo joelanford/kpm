@@ -17,7 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation"
 
-	"github.com/joelanford/kpm/internal/pkg/bundle/registry/internal"
+	"github.com/operator-framework/kpm/internal/pkg/bundle/registry/internal"
 )
 
 type metadata struct {

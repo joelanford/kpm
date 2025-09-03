@@ -9,7 +9,7 @@ to support more (FBC, Helm, and other Kubernetes-native application artifacts)
 ## Installation
 
 ```console
-go install github.com/joelanford/kpm@latest
+go install github.com/operator-framework/kpm@latest
 ```
 
 ## OLM `registry+v1` bundles

@@ -19,7 +19,7 @@ import (
 	"oras.land/oras-go/v2"
 	"oras.land/oras-go/v2/content"
 
-	"github.com/joelanford/kpm/internal/pkg/util/tar"
+	"github.com/operator-framework/kpm/internal/pkg/util/tar"
 )
 
 const (
